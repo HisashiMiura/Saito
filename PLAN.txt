@@ -1,0 +1,123 @@
+ Whamcavity.f95 → Python 変換計画                                                                                                │
+│                                                                                                                                 │
+│ 概要                                                                                                                            │
+│                                                                                                                                 │
+│ Fortran 95の熱・水分移動シミュレーション（約2200行）をNumPy/SciPyベースのPythonに変換する。                                     │
+│                                                                                                                                 │
+│ アーキテクチャ                                                                                                                  │
+│                                                                                                                                 │
+│ whamcavity/                                                                                                                     │
+│ ├── __init__.py                                                                                                                 │
+│ ├── config.py           # 定数・パラメータ (NXP=150, KMTLP=10, NWP=50, NMTL=19等)                                               │
+│ ├── datatypes.py        # Dataclass (SimulationState, MeteorologicalData等)                                                     │
+│ ├── thermodynamics.py   # goff, satuwpt, funcx, rewpt, wptre                                                                    │
+│ ├── moisture.py         # caldpdu, caldgdu, diff, ahgans (19材料)                                                               │
+│ ├── solar.py            # soloct, satcal                                                                                        │
+│ ├── damage.py           # wood_rot, rh_critical, tin                                                                            │
+│ ├── io_handlers.py      # ファイル入出力 (固定書式パーサー含む)                                                                 │
+│ ├── room.py             # room                                                                                                  │
+│ ├── solver.py           # 過緩和法ソルバー (温度・水分)                                                                         │
+│ ├── simulation.py       # Simulationクラス (メイン時間ループ)                                                                   │
+│ └── main.py             # エントリーポイント                                                                                    │
+│                                                                                                                                 │
+│ COMMON ブロック → Dataclass                                                                                                     │
+│                                                                                                                                 │
+│ @dataclass                                                                                                                      │
+│ class MeteorologicalData:  # COMMON /MS/                                                                                        │
+│     tempo: NDArray[np.float64]  # (25,) 外気温                                                                                  │
+│     sjd: NDArray[np.float64]    # (25,) 直達日射                                                                                │
+│     sjs: NDArray[np.float64]    # (25,) 天空日射                                                                                │
+│     sat: NDArray[np.float64]    # (NWP,25) 外気温                                                                               │
+│     sjin: NDArray[np.float64]   # (NWP,25) 壁面日射                                                                             │
+│     # ...                                                                                                                       │
+│                                                                                                                                 │
+│ @dataclass                                                                                                                      │
+│ class SimulationState:                                                                                                          │
+│     tmp: NDArray[np.float64]    # (NWP,NXP) 温度                                                                                │
+│     wpu: NDArray[np.float64]    # (NWP,NXP) 水分ポテンシャル                                                                    │
+│     rh: NDArray[np.float64]     # (NWP,NXP) 相対湿度                                                                            │
+│     wgt: NDArray[np.float64]    # (NWP,NXP) 含水率                                                                              │
+│     # ...                                                                                                                       │
+│                                                                                                                                 │
+│ 計算GO TO → 辞書ディスパッチ                                                                                                    │
+│                                                                                                                                 │
+│ SORPTION_ISOTHERMS: Dict[int, Callable[[float], float]] = {                                                                     │
+│     1: _isotherm_seasoning_board,                                                                                               │
+│     3: _isotherm_glass_wool,                                                                                                    │
+│     4: _isotherm_wood,                                                                                                          │
+│     # ... 19材料分                                                                                                              │
+│ }                                                                                                                               │
+│                                                                                                                                 │
+│ def ahgans(rh: float, material_id: int) -> float:                                                                               │
+│     return SORPTION_ISOTHERMS[material_id](rh)                                                                                  │
+│                                                                                                                                 │
+│ 時間ループ構造                                                                                                                  │
+│                                                                                                                                 │
+│ Year → Month → Day → Hour → Substep(NDVD)                                                                                       │
+│   ├── 境界条件計算 (日射、風雨)                                                                                                 │
+│   ├── 温度場収束 (過緩和法, EPS1=0.01K)                                                                                         │
+│   ├── 水分場収束 (過緩和法, EPS2=100Pa)                                                                                         │
+│   ├── 通気量計算 (浮力駆動)                                                                                                     │
+│   └── 木材腐朽計算                                                                                                              │
+│                                                                                                                                 │
+│ 実装順序                                                                                                                        │
+│ ┌──────┬────────────┬───────────────────────────────────┐                                                                       │
+│ │ 段階 │    内容    │             ファイル              │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 1    │ 基盤構築   │ config.py, datatypes.py           │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 2    │ 熱力学関数 │ thermodynamics.py                 │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 3    │ 材料物性   │ moisture.py (AHGANS含む19材料)    │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 4    │ 入出力     │ io_handlers.py (固定書式パーサー) │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 5    │ 日射・室温 │ solar.py, room.py                 │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 6    │ ソルバー   │ solver.py (過緩和法)              │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 7    │ 統合       │ simulation.py (時間ループ)        │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 8    │ 腐朽モデル │ damage.py                         │                                                                       │
+│ ├──────┼────────────┼───────────────────────────────────┤                                                                       │
+│ │ 9    │ エントリー │ main.py                           │                                                                       │
+│ └──────┴────────────┴───────────────────────────────────┘                                                                       │
+│ 重要な変換ポイント                                                                                                              │
+│                                                                                                                                 │
+│ Fortran固定書式 I/O                                                                                                             │
+│                                                                                                                                 │
+│ def parse_fixed_format(line: str, format_spec: str) -> List[float]:                                                             │
+│     # "F4.1,F3.1,3F3.0" → 列幅で分割してパース                                                                                  │
+│                                                                                                                                 │
+│ 過緩和法ソルバー                                                                                                                │
+│                                                                                                                                 │
+│ def solve_temperature(state, omega=1.2, eps=0.01, max_iter=5000):                                                               │
+│     for iteration in range(max_iter):                                                                                           │
+│         max_change = gauss_seidel_sweep(state, omega)                                                                           │
+│         if max_change < eps:                                                                                                    │
+│             return iteration                                                                                                    │
+│     return max_iter                                                                                                             │
+│                                                                                                                                 │
+│ 検証方法                                                                                                                        │
+│                                                                                                                                 │
+│ 1. 単体テスト: 各熱力学関数を既知の値と照合                                                                                     │
+│ 2. 往復テスト: rewpt ↔ wptre が逆関数であることを確認                                                                           │
+│ 3. Fortran照合: 同一入力で両バージョンを実行、出力比較                                                                          │
+│ 4. 保存則: 水分・熱量の収支バランス検証                                                                                         │
+│                                                                                                                                 │
+│ 参照すべきソースコード箇所                                                                                                      │
+│ ┌───────────┬────────────────────────────────┐                                                                                  │
+│ │  行番号   │              内容              │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 1-100     │ 配列宣言、パラメータ定義       │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 391-450   │ 時間ループ開始、気象データ読込 │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 780-990   │ 温度収束ループ（過緩和法）     │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 1060-1360 │ 水分収束ループ                 │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 1758-1864 │ AHGANS: 19材料の吸放湿等温線   │                                                                                  │
+│ ├───────────┼────────────────────────────────┤                                                                                  │
+│ │ 2110-2185 │ 木材腐朽モデル                 │                                                                                  │
+│ └───────────┴────────────────────────────────┘                                                                              
