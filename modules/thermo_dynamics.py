@@ -16,6 +16,12 @@ ROW_CP = 1300.0
 # 水の蒸発潜熱, J / kg
 RW = 2.512 * 10**6
 
+# 水の比熱, J / (kg K)
+CPL = 4200.0
+
+# 水の密度, kg / m3
+ROW = 998.0
+
 
 def get_wp(rh: float, t: float) -> float:
     """水分化学ポテンシャルを求める。
@@ -261,6 +267,7 @@ def DIFF(n_mat: int, rh:float, k: float):
         n_mat: 材料番号
         rh: 相対湿度, %
         k: 絶対温度, K
+    Returns:
     """
 
     # 含水率
@@ -289,3 +296,45 @@ def DIFF(n_mat: int, rh:float, k: float):
         rml = 0.0
         
     return rml
+
+
+def CALDPDU(wpt, tp, gma, ml0, row):
+    """
+    含水率変化に対するポテンシャル変化率 (DPDU) を計算する。(J/kg)/K
+    gma:kg/m3
+    TODO: 単位がよくわからない。
+    """
+    d1 = wpt
+    
+    # 元のFortranのロジック: 正の値の場合は -100.0 に強制
+    if d1 > 0.0:
+        d1 = -100.0
+    
+    # 差分幅の計算 (d1の1%), J/kg
+    dw = abs(d1 * 0.01)
+    
+    # 微小変化させた含水率, J/kg
+    w1 = d1 + dw
+    w2 = d1 - dw
+    
+    # 以前定義した WPTRE (平衡相対湿度計算) を呼び出し, %
+    rh1 = WPTRE(w1, tp)
+    rh2 = WPTRE(w2, tp)
+    
+    # 外部定義されている前提の AHGANS, 含水率
+    wd1 = AHGANS(rhm=rh1, ml0=ml0)
+    wd2 = AHGANS(rhm=rh2, ml0=ml0)
+    
+    # VGTの計算 (0.01は%を小数に戻す係数と推測)
+    # kg/m3 / 
+    vgt1 = 0.01 * wd1 * gma / row
+    vgt2 = 0.01 * wd2 * gma / row
+    
+    # 中央差分による勾配(微分値)の近似
+    # 0.5 * (VGT1 - VGT2) / DW
+    if dw != 0:
+        dpdu = 0.5 * (vgt1 - vgt2) / dw
+    else:
+        dpdu = 0.0
+        
+    return dpdu

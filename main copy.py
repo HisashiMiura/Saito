@@ -2,9 +2,8 @@ import numpy as np
 from dataclasses import dataclass
 
 from modules.room import Room, InputRoom
-from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, DIFF, AHGANS
+from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, DIFF, AHGANS, CALDPDU, CPL, ROW
 from modules.config import TMPOC, HTC_TW, HOI
-from modules.thin_wall import ThinWall
 from modules.wall import Wall, WallType, Layer
 from modules.solar_position import get_solar_position
 from modules.weather import Weather
@@ -27,12 +26,13 @@ INTEGER DAY,DAY2,DAY1
 
 !//////////COEFFOCIENT//////////////
 DIMENSION NX(NWP)
-DIMENSION DPDU(NWP,NXP),WGT(NWP,NXP)
-DIMENSION DWLX(NWP,NXP+1),RMDX(NWP,NXP+1), DTLX(NWP,NXP+1),DWX(NWP,NXP+1),DTX(NWP,NXP+1)
-DIMENSION ADTGX(NWP,NXP+1),ADTLX(NWP,NXP+1),ADWX(NWP,NXP+1),ADTX(NWP,NXP+1)
-DIMENSION ALD(NWP,KMTLP,2),ALDP(NWP,KMTLP,2),ALDT(NWP,KMTLP,2)
+DIMENSION WGT(NWP,NXP)
+DIMENSION DTX(NWP,NXP+1)
+DIMENSION ADTX(NWP,NXP+1)
+DIMENSION ALD(NWP,KMTLP,2), ALDT(NWP,KMTLP,2)
 DIMENSION ALP_TOTAL(KMTLP),TEMP_CAVITY(KMTLP),HIGHT_CAVITY(KMTLP)
 DIMENSION KMTL(KMTLP),WOUTAV(50)
+
 !/////////VARIABLE///////////////
 DIMENSION WPU(NWP,NXP),WPS(NWP,NXP),WPW(NWP,NXP),TMP(NWP,NXP)
 DIMENSION XN(NWP,NXP)
@@ -52,13 +52,10 @@ DIMENSION RN(NWP,NXP),HRN(NWP,NXP)
 DIMENSION MDAY(12)
 DIMENSION WSIND(NWP,25)
 
-!/////////////CONSTANT/////////////////
-DATA RW,CPL,ROW/2.512D+6,4200,998/! [J/kg],CPL[J/kgK],ROW[kg/m3]
-!DATA RW,CPL,ROW/0.,4200,998/! [J/kg],CPL[J/kgK],ROW[kg/m3]
+
 DATA OMG/1.2/
 DATA MDAY/31,28,31,30,31,30,31,31,30,31,30,31/
-!RW=0.
-!
+
 !**** FILE OPEN ****
 
   PRINT *,  '　　気象データファイルを入力して下さい'
@@ -123,22 +120,18 @@ for I in range(len(walltypes)):
 
     # 層
     for K in range(KMTL(I)):
-        D1 = 0.0
+        c_liquid_i_pls = 0.0
         D2 = 0.0
         if walls[I][K].alpha > 1.E-7:
             # 階
             for LW, wall in enumerate(walls):
                 IW = wall.kwtype
-                D1 = D1 + 1 / (wall.alpha_a[K] * wall.alpha_a[K])
+                c_liquid_i_pls = c_liquid_i_pls + 1 / (wall.alpha_a_ls[K] * wall.alpha_a_ls[K])
                 # 通気層高さの合計
                 D2 = D2 + walls[LW].height
-            if D1 > 1E-12:
-                ALP_TOTAL(K)=1/SQRT(D1) 
+            if c_liquid_i_pls > 1E-12:
+                ALP_TOTAL(K)=1/SQRT(c_liquid_i_pls) 
                 HIGHT_CAVITY(K)=D2
-
-thin_walls: list[ThinWall] = ThinWall.read_default()
-
-
 # 薄壁部位数
 NWIN = 4
 
@@ -259,6 +252,10 @@ period = Period()
 
 weather = Weather.load_data(file_name='weather.csv', longitude=HIDO, latitude=HKEIDO)
 
+
+t_ws_is = [np.zeros(wall.n_mesh_total, dtype=float) for wall in walls]
+wp_ws_is = [np.zeros(wall.n_mesh_total, dtype=float) for wall in walls]
+
 #DO 444
 for NYEAR in range(1, period.LYEAR + 1):
 
@@ -298,7 +295,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                     oc = weather.get_condition(month=MON, day=DAY, hour=IM, frac=frac)
 
                     # Pa / (J/K)
-                    D1 = get_dgdu(rh=oc.rh, t=oc.t_k)
+                    c_liquid_i_pls = get_dgdu(rh=oc.rh, t=oc.t_k)
 
                     # Pa / K
                     D2 = get_dgdt(rh=oc.rh, t=oc.t_k)
@@ -313,7 +310,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                     # PXCOF = 1. / 133322. 
                     # J = rho * V * dX = (dg/du) * V * dmu + 
                     # 133322: エクセルで絶対湿度と水蒸気圧
-                    DGDUO = 1.2 * PXCOF * D1
+                    DGDUO = 1.2 * PXCOF * c_liquid_i_pls
 
                     DGDTO = 1.2 * PXCOF * D2
 
@@ -330,7 +327,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                             DO I=L1,L2
                                 HWPU(LW,I) = WPU(LW,I)
 
-                                wall.set_HTMP(I, wall.t_n_pls[I])
+                                wall.t_n_is = wall.t_n_pls
                                 # 1ステップ前の値を入れ替えている。
                                 XM(LW,I)=XN(LW,I)
                                 HRN(LW,I)=RN(LW,I)
@@ -358,22 +355,16 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                             DO I=L1,L2
 
-                                if wall.rh[I] > 99.98:
-                                    CYCLE
-
                                 IF(I.EQ.L1)THEN
                                     # (kg / s) / (J / kg) = kg/(m2 s Pa) * Pa / (J / kg) * m2
                                     ALD(LW,K,1) = wall.layers[k].cond_m_o * wall.dgdu(i) * wall.area
                                     # (kg / s) / K = kg/(m2 s Pa) * Pa / K * m2
                                     ALDT(LW,K,1) = wall.layers[k].cond_m_o* wall.dgdt(i) * wall.area
-                                    # (kg / s) / Pa = kg/(m2 s Pa) * m2
-                                    ALDP(LW,K,1) = wall.layers[k].cond_m_o * wall.area
                                 END IF
 
                                 IF(I.EQ.L2)THEN
                                     ALD(LW,K,2) = wall.layers[k].cond_m_i * wall.dgdu(i) * wall.area
                                     ALDT(LW,K,2) = wall.layers[k].cond_m_i* wall.dgdt(i) * wall.area
-                                    ALDP(LW,K,2) = wall.layers[k].cond_m_i * wall.area
                                 END IF
 
                                 IF(L5.EQ.2)THEN   !空気層
@@ -385,42 +376,20 @@ for NYEAR in range(1, period.LYEAR + 1):
                                     DGDTQ(LW,K)=1.2* wall.dgdt(i) *PXCOF 
                                     CYCLE
                                 END IF
-                                !
 
-                                WP=WPU(LW,I)
-                                TP=TMP(LW,I)
-                                D1 = wall.GMA[I]
 
-                                IF(L5.NE.2)THEN
-                                    IF(L5.NE.3)THEN
-                                        D2 = CALDPDU(WP,TP,D1,L5,RG,ROW)
-                                        DPDU(LW,I)=D2
-                                    ELSE
-                                        if wall.rh[I] <= 99.98:
-                                            D2 = CALDPDU(WP,TP,D1,L5,RG,ROW)
-                                            DPDU(LW,I)=D2
-                                        END IF
-                                    END IF
-
-                                END IF
-
-                                #  ここにゼロがあるのはあっている？
-                                ADTLX(LW,I)=0.* wall.RMDL(I) *DPDU(LW,I)* wall.area / wall.dx_is[I]
-                                ADTX(LW,I)=wall.ADTGX(i)+ADTLX(LW,I)
+                                ADTX(LW,I) = wall.ADTGX(i) + wall.ADTLX(i=I, wpt=WPU(LW,I), tp=TMP(LW,I))
                             END DO
 
                             DO I=L1+1,L2
                                 # 計算した値を平均する方が良い。逆数同士足した値の逆数がベター
-                                DWLX(LW,I) = (wall.ADWLX(i) + wall.ADWLX(i - 1))*0.5
-                                DWX(LW,I) = (wall.ADWX(i) + wall.ADWX(i - 1) )*0.5
-                                DTLX(LW,I)=(ADTLX(LW,I)+ADTLX(LW,I-1))*0.5
+                                # 本来であれば、逆数の和の逆数にすべきだが、片方がゼロになる場合はゼロ割の可能性があるので注意が必要。
                                 DTX(LW,I)=(ADTX(LW,I)+ADTX(LW,I-1))*0.5
                             END DO
                         END DO
                     END DO
 
                     !////////////CAL_TEMP BY OVER RELAXATION METHOD///////////
-                    IT1=0                                                                     
                     ITQ=0
                     IT4=IT4+1
 
@@ -439,167 +408,57 @@ for NYEAR in range(1, period.LYEAR + 1):
                     # GOTO 文でここに戻ってくる
                     510 AMAX1=0. 
 
-                    # ******ROOM TEMP*****
-
-                    n = get_step_d_t(month=MON, day=DAY, hour=IM)
                     n = get_step_n(month=month, day=day, hour=hour, n_hour=n, n_div=NDVD)
 
-                    # ステップnにおける室温, ℃
-                    theta_r_n = room.theta_n(n=n)
+                    t_ws_is_next = []
 
-                    for n_l, wall in enumerate(walls):
+                    delta_ws = []
 
-                        LW = n_l
+                    for w, wall in enumerate(walls):
 
-                        for i in range(wall.n_mesh_total):
+                        t_is = t_ws_is[w]
 
-                            layer = wall.get_layer(i)
+                        t_is_next = wall.get_t_n_pls(t_is=t_is, dt=dt, oc=oc, theta_r_n=room.theta_n(n=n), wp_r_n=room.wp_n(n=n), QQ=QQ, t_upstream=t_upstream)
 
-                            if layer.num == 2:
-                                cap = 1300.0 * layer.dx * wall.area / dt
-                            else:
-                                # 体積 m3 * 熱容量 J / (m3 K) / 時間 s
-                                cap = wall.v_is[i] * wall.gcp_is[i] / dt
-                            
-                            # 室外側の質点の温度
-                            # 質点が室外側表面の場合
-                            if wall.is_outside_surface(i=i):
-                                t_i_mns = wall.get_t_surf_out(oc=oc, theta_r=theta_r_n)
-                            else:
-                                t_i_mns = TMP(LW, I - 1)
-                            
-                            # 室内側の質点の温度
-                            # 質点が室内側表面の場合
-                            if wall.is_inside_surface(i=i):
-                                t_i_pls = room.theta_n(n=n)
-                            else:
-                                t_i_pls = TMP(LW, I + 1)
-                            
-                            # 室外側の質点の水分ポテンシャル
-                            if wall.is_outside_surface(i=i):
-                                wp_i_mns = oc.wp
-                            else:
-                                wp_i_mns = WPU(LW, i-1)
+                        t_ws_is_next.append((t_is_next - t_is) * OMG + t_is)
 
-                            wp_i = WPU(LW, i)
+                        delta_is = t_is_next - t_is
 
-                            # 室外側の質点の温度
-                            # 質点が室外側表面の場合
-                            if wall.is_outside_surface(i=i):
-                                wp_i_pls = room.wp_n(n=n)
-                            else:
-                                wp_i_pls = WPU(LW, I + 1)
+                        delta_ws.append(np.abs(delta_is).max())
 
-                            # 温度差を駆動力とする熱移動に関する係数（室外側）, W/K
-                            c_t_i_mns = wall.get_c_t_i_mns(i)
-
-                            # 温度差を駆動力とする熱移動に関する係数（室内側）, W/K
-                            c_t_i_pls = wall.get_c_t_i_pls(i)
-
-                            # 水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室外側）, W/(J/kg)
-                            c_wp_i_mns = wall.get_c_wp_i_mns(i)
-
-                            # 水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室内側）, W/(J/kg)
-                            c_wp_i_pls = wall.get_c_wp_i_pls(i)
-                                                            
-                            # W
-                            UHEN = (
-                                cap * wall.HTMP(I)
-                                + c_t_i_mns * t_i_mns
-                                + c_t_i_pls * t_i_pls
-                                + c_wp_i_mns * (wp_i_mns - wp_i)
-                                + c_wp_i_pls * (wp_i_pls - wp_i)
-                            )
-
-                            # W/K
-                            SAHEN = (
-                                cap
-                                + c_t_i_mns
-                                + c_t_i_pls
-                            )
-
-                            if layer.num == 2:
-                                # 空気層の場合に移流分を考慮する。                                
-                                UHEN =+ 1300.0 * QQ(LW,K) * t_upstream
-                                SAHEN =+ 1300.0 * QQ(LW,K)
-
-
-                            if wall.is_first_mesh(i):
-
-                                D1 = CPL * (DWLX(LW,I+1) * (wp_i_pls - wp_i) + DTLX(LW,I+1) * (t_i_pls -TMP(LW,I))) 
-                                UHEN =+ D1 * t_i_pls
-                                SAHEN =+ D1
-
-                            elif wall.is_last_mesh(i):
-
-                                D0 = CPL * (DWLX(LW,I) * (wp_i_mns - wp_i) + DTLX(LW,I) * (t_i_mns - TMP(LW,I)))
-                                UHEN =+ D0 * t_i_mns
-                                SAHEN =+ D0
-
-                            else:
-                                # 液水移動による熱の移動
-                                # CPL: 水の比熱 4200 J / (kg K) 
-                                # カッコの中は、kg/s
-                                # DWLX: 液水成分の水分伝導率, kg/s / (J/kg) 
-                                # WPU: ポテンシャル, J/K
-                                # DTLX: 温度勾配による水分流量, kg/s / K
-                                # TMP: 温度, K
-                                D0 = CPL * (DWLX(LW,I)   * (wp_i_mns - wp_i) + DTLX(LW,I)   * (t_i_mns - TMP(LW,I)))
-                                D1 = CPL * (DWLX(LW,I+1) * (wp_i_pls - wp_i) + DTLX(LW,I+1) * (t_i_pls - TMP(LW,I)))
-
-                                UHEN =+ (D0 + D1) * (t_i_mns + t_i_pls)
-                                SAHEN =+ (D0 + D1) * 2
-
-                            TMP(LW,I)=UHEN/SAHEN
-
-                    !/////////OVER RELAXATION ////// 
-                    DO LW=1,len(walls)
-                        IW=walls[LW].kwtype
-                        DO K=1,KMTL(IW)
-                            L1=NAFX(IW,K)
-                            L2=NALX(IW,K)
-                            L5=walltypes[IW][K].num
-                            DO I=L1,L2
-                                TMP(LW,I)=(TMP(LW,I)-ATMP(LW,I))*OMG+ATMP(LW,I)
-                                D8=TMP(LW,I)-ATMP(LW,I)
-                                IF(ABS(D8).GT.AMAX1)AMAX1=ABS(D8)
-                                ATMP(LW,I)=TMP(LW,I)
-                            END DO
-                        END DO
-                    END DO
-
-                    # /////////JUDGEMENT CONVERGENCE//////
-
-                    IT1=IT1+1
-                        
-                    IF(IT1.GT.MXIT)THEN
-                        # ****************************************
-                        GO TO 555
-                    END IF
-
-                    IF(AMAX1.GT.EPS1) GO TO 510
+                    if max(delta_ws) > EPS1:
+                        GO TO 510
 
                     # *************換気計算収束判定********************
-                    IF(ITQ.GT.1)THEN
+                    if ITQ > 1:
+
                         D1=0
+
                         D2=0
-                        DO LW=1,len(walls)
-                            IW=walls[LW].kwtype
-                            DO K=1,KMTL(IW)
-                                L1=NAFX(IW,K)
+
+                        for LW, wall in enumerate(walls):
+
+                            IW = wall.kwtype
+
+                            for i in range(wall.n_mesh_total):
+
+                            for K in range(wall.layers):
+                                L1 = NAFX(IW,K)
                                 L2=NALX(IW,K)
                                 L5=walltypes[IW][K].num
-                                IF(L5.EQ.2.AND.walls[IW][K].alpha.GT.0.)THEN
-                                    D1=ABS(TMP(LW,L1)-ATP-ATMPQ(LW,L1))
-                                    IF(D1.GT.D2)D2=D1
-                                END IF
+                                if wall.materials_is[i] == 2 and wall[K].alpha > 0.0:
+                                    
+                                    D1 = abs(TMP(LW,L1)-ATP-ATMPQ(LW,L1))
+                                    if D1 > D2:
+                                        D2 = D1
+
                                 ATMPQ(LW,L1)=TMP(LW,L1)-ATP
                             END DO
                         END DO
                         IF(D2.LT.EPS1)GO TO 218
                     END IF
 
-                    !*************換気量の算出(Q=m3/s)****************
+                    # *************換気量の算出(Q=m3/s)****************
                     DO I=1,NWTYPE
                         DO K=1,KMTL(I)
                             D1=0.
@@ -622,8 +481,9 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 D1=0.5*ABS(PQ1)*HIGHT_CAVITY(K)*9.8                !中性帯　高さ中央 0.5, 重力加速度 g(ρ-ρ)
                             END IF
 
-                            DO LW=1,len(walls)
-                                IW=walls[LW].kwtype
+                            for i, wall in enumerate(walls):
+                                LW = i + 1
+                                IW = wall.kwtype
                                 IF(L5.EQ.2.AND.walls[IW][K].alpha.GT.0)QQ(LW,K)=DSQRT(D1)*4.*ALP_TOTAL(K)
                             END DO
                         END DO
@@ -656,7 +516,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                     CWMAX=2.8E-2
 
                     ITC=0
-                    710 AMAX2=0.D0 
+                    710 AMAX2=0.c_liquid_i_mns 
 
                     # *************************************
                     # ************水膜の水分保持量及び吸水量の計算**********
@@ -691,13 +551,13 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 D4=3.43E-08*(D3-VP)*0.3                                       !****濡れ面率0.3  水膜からの蒸発量
 
                                 IF(L5.GE.10.AND.L5.LE.12)THEN                                 !バックシーラー透水抵抗 2.4e+5 m2sPa/kg by　長村
-                                    D1=1/( walltypes[IW].layers[J].dx /3.73E-6+2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
+                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /3.73E-6+2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
                                 ELSE
-                                    D1=1/( walltypes[IW].layers[J].dx /(3.73E-6*0.05)+2.4E+5/DGDU)                 !木製品を想定
+                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /(3.73E-6*0.05)+2.4E+5/DGDU)                 !木製品を想定
                                 END IF
 
-                                RN(I,J)=(D1*D2+D4+walls[I].get_swjrain(oc=oc, i=J))*3600/NDVD+HRN(I,J)            !******水膜の水分量kg/m2
-                                WJRAIN(I,J)=-D1*D2*walls[LW].area
+                                RN(I,J)=(c_liquid_i_pls*D2+D4+walls[I].get_swjrain(oc=oc, i=J))*3600/NDVD+HRN(I,J)            !******水膜の水分量kg/m2
+                                WJRAIN(I,J)=-c_liquid_i_pls*D2*walls[LW].area
 
                                 IF(RN(I,J).LE.0)THEN
                                     RN(I,J)=0.
@@ -709,107 +569,86 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     # ****************************************
 
-                    DO LW=1,len(walls)
-                        IW=walls[LW].kwtype
-                        DO K=1,KMTL(IW)
-                        L1=NAFX(IW,K)
-                        L2=NALX(IW,K)
-                        L5=walltypes[IW][K].num
-                        # *******  VENTED CAVITY  ******
+                    for i, wall in enumerate(walls):
+                        
+                        LW = i + 1
+                        
+                        IW = wall.kwtype
 
-                        IF(L5.EQ.2)THEN
-                            I=L1
-                            D4=0.
-                            D5=0.
-                            D1=ALD(LW,K,1)+ALD(LW,K,2)+DGDUQ(LW,K)*QQ(LW,K)
-                            D2=ALD(LW,K,1)*WPU(LW,I-1)+ALD(LW,K,2)*WPU(LW,I+1)
-                            D3=ALDT(LW,K,1)*(TMP(LW,I-1)-TMP(LW,I))+ALDT(LW,K,2)*(TMP(LW,I+1)-TMP(LW,I))   !+DGDTQ(LW,K)*QQ(LW,K)*( oc.t_k -TMP(LW,I))
-                            IF(LW.EQ.1)THEN
-                                D2=D2+DGDUQ(LW,K)*QQ(LW,K) * oc.wp                              !最下層
-                                D3=D3+DGDTQ(LW,K)*QQ(LW,K)*( oc.t_k -TMP(LW,I))
-                                UHEN=D1* wall.HTMP[I] +D4+D5+1300.*QQ(LW,K) * oc.t_k                !D4,D5 不要?
-                            ELSE
-                                D2=D2+DGDUQ(LW,K)*QQ(LW,K)*WPU(LW-1,I)                        !2階以上
-                                D3=D3+DGDTQ(LW,K)*QQ(LW,K)*(TMP(LW-1,I)-TMP(LW,I))
-                            END IF
-                            IF(RN(LW,I+1).GT.0.)THEN                                       ! D4 内側の水膜蒸発量 濡れ面率0.3
-                                t_srf=TMP(LW,I+1)
-                                FS, VP = GOFF(t_srf)
-                                D4=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
-                            END IF
-                            IF(RN(LW,I-1).GT.0.)THEN                                       ! D5 外側の水膜蒸発量 濡れ面率0.3
-                                t_srf=TMP(LW,I-1)
-                                FS, VP = GOFF(t_srf)
-                                D5=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
-                            END IF
-                            UHEN=D2+D3+D4+D5
-                            SAHEN=D1
-                            WPU(LW,I)=UHEN/SAHEN
-                            IF(WPU(LW,I).GE.0.00)WPU(LW,I)=-1.3E-4
+                        for i in range(wall.n_mesh_total):
+
+                        for K in range(1, KMTL(IW)):
+                        
+                            L1 = NAFX(IW,K)
+                            L2 = NALX(IW,K)
+                            L5 = walltypes[IW][K].num
+                        
+                            # *******  VENTED CAVITY  ******
+
+                            t_i_mns = oc.t_k if wall.is_outside_surface(i) else TMP(LW,I-1)
+                            t_i = TMP(LW,I)
+                            t_i_pls = room_t_n(n=n) if wall.is_inside_surface(i) else TMP(LW,I+1)
+                        
+                            D21 = ALD(LW,K,1) if wall.is_outside_end_point_is[i] else DWX(LW,I)
+                            D22 = ALD(LW,K,2) if wall.is_inside_end_point_is[i] else DWX(LW,I+1)
+
+                            D31 = D21 * (oc.wp if wall.is_outside_surface(i) else WPU(i - 1))
+                            D32 = D22 * (room.wp_n(n=n) if wall.is_inside_surface(i) else WPU(i+1))
+
+                            D41 = (ALDT(LW,K,1) if wall.is_outside_end_point_is[i] else DTX(LW,I)) * (t_i_mns - t_i)
+                            D42 = (ALDT(LW,K,2) if wall.is_inside_end_point_is[i] else DTX(LW,I+1)) * (t_i_pls - t_i)
+
+                            if wall.get_layer(i).num == 2:
+                                I=L1
+                                D4=0.
+                                D5=0.
+                                D1 = D21 + D22 +DGDUQ(LW,K)*QQ(LW,K)
+                                D2 = D31 + D32
+                                D3 = D41 + D42
+                                
+                                IF(LW.EQ.1)THEN
+                                    D2=D2+DGDUQ(LW,K)*QQ(LW,K) * oc.wp                              !最下層
+                                    D3=D3+DGDTQ(LW,K)*QQ(LW,K) * ( oc.t_k -TMP(LW,I))
+                                    UHEN=D1* wall.t_n_is[I] +D4+D5+1300.*QQ(LW,K) * oc.t_k                !D4,D5 不要?
+                                ELSE
+                                    D2=D2+DGDUQ(LW,K)*QQ(LW,K) * WPU(LW-1,I)                        !2階以上
+                                    D3=D3+DGDTQ(LW,K)*QQ(LW,K) * (TMP(LW-1,I)-TMP(LW,I))
+                                END IF
+
+                                IF(RN(LW,I+1).GT.0.)THEN                                       ! D4 内側の水膜蒸発量 濡れ面率0.3
+                                    t_srf=TMP(LW,I+1)
+                                    FS, VP = GOFF(t_srf)
+                                    D4=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
+                                END IF
+                                IF(RN(LW,I-1).GT.0.)THEN                                       ! D5 外側の水膜蒸発量 濡れ面率0.3
+                                    t_srf=TMP(LW,I-1)
+                                    FS, VP = GOFF(t_srf)
+                                    D5=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
+                                END IF
+                                UHEN=D2+D3+D4+D5
+                                SAHEN=D1
+                                WPU(LW,I)=UHEN/SAHEN
+                                IF(WPU(LW,I).GE.0.00)WPU(LW,I)=-1.3E-4
                                 CYCLE
                             END IF
-                            ! **************
 
-                            DO I=L1,L2
-                                D7=WJRAIN(LW,I)
+                            D1 = ROW * wall.DPDU(i=I, wpt=WPU(LW,I), tp=TMP(LW,I)) * wall.v_is[I] / dt / 2
 
-                                IF(I.EQ.L1)THEN               !***********端部外
-                                    D1=ROW*DPDU(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area/dt*0.5
+                            D2 = D21 + D22
 
-                                    IF(I.EQ.1)THEN
-                                        IF(walls[LW].room_sideA.EQ.0)THEN
-                                            D2=DWX(LW,I+1)+ALD(LW,K,1)
-                                            D3=DWX(LW,I+1)*WPU(LW,I+1)+ALD(LW,K,1) * oc.wp
-                                            D4=DTX(LW,I+1)*(TMP(LW,I+1)-TMP(LW,I))+ALDT(LW,K,1)*(oc.t_k -TMP(LW,I))
-                                            SAHEN=D1+D2
-                                            UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area
-                                        ELSE
-                                            D2=DWX(LW,I+1)+ALD(LW,K,1)
-                                            D3=DWX(LW,I+1)*WPU(LW,I+1)+ALD(LW,K,1) * rooms[walls[LW].room_sideA].wp_d(d=IM)
-                                            D4=DTX(LW,I+1)*(TMP(LW,I+1)-TMP(LW,I))+ALDT(LW,K,1)*( rooms[walls[LW].room_sideA].t_d(d=IM) -TMP(LW,I))
-                                            SAHEN=D1+D2
-                                            UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area
-                                        END IF
-                                    ELSE
-                                        D2=DWX(LW,I+1)+ALD(LW,K,1)
-                                        D3=DWX(LW,I+1)*WPU(LW,I+1)+ALD(LW,K,1)*WPU(LW,I-1)
-                                        D4=DTX(LW,I+1)*(TMP(LW,I+1)-TMP(LW,I))+ALDT(LW,K,1)*(TMP(LW,I-1)-TMP(LW,I))
-                                        SAHEN=D1+D2
-                                        UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area !
-                                    END IF
+                            D3 = D31 + D32
 
-                                END IF
+                            D4 = D41 + D42
 
-                                IF(I.GT.L1.AND.I.LT.L2)THEN   !*********実質部
-                                    D1=ROW*DPDU(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area/dt
-                                    D2=DWX(LW,I)+DWX(LW,I+1)
-                                    D3=DWX(LW,I)*WPU(LW,I-1)+DWX(LW,I+1)*WPU(LW,I+1)
-                                    D4=DTX(LW,I)*(TMP(LW,I-1)-TMP(LW,I))+DTX(LW,I+1)*(TMP(LW,I+1)-TMP(LW,I))
-                                    SAHEN=D1+D2
-                                    UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area !WJRAIN(LW,I)!
-                                END IF
-                                IF(I.EQ.L2)THEN                !************端部内
-                                    D1=ROW*DPDU(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area/dt*0.5
+                            D5 = WJRAIN(LW,I) + WJW(LW,I) * wall.dx_is[i] * wall.area # WJRAIN(LW,I)!
 
-                                    IF(I.EQ.NX(IW))THEN
-                                        D2=DWX(LW,I)+ALD(LW,K,2)
-                                        D3=DWX(LW,I)*WPU(LW,I-1)+ALD(LW,K,2) * rooms[walls[LW].room_sideB].wp_d(d=IM)
-                                        D4=DTX(LW,I)*(TMP(LW,I-1)-TMP(LW,I))+ALDT(LW,K,2)*(rooms[walls[LW].room_sideB].t_d(d=IM) -TMP(LW,I))
-                                        SAHEN=D1+D2
-                                        UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area  !WJRAIN(LW,I)
-                                    ELSE
-                                        D2=DWX(LW,I)+ALD(LW,K,2)
-                                        D3=DWX(LW,I)*WPU(LW,I-1)+ALD(LW,K,2)*WPU(LW,I+1)
-                                        D4=DTX(LW,I)*(TMP(LW,I-1)-TMP(LW,I))+ALDT(LW,K,2)*(TMP(LW,I+1)-TMP(LW,I))
-                                        SAHEN=D1+D2
-                                        UHEN=D3+D4+D1*HWPU(LW,I)+D7+WJW(LW,I)* walltypes[IW].layers[K].dx *walls[LW].area  !WJRAIN(LW,I)
-                                    END IF
-                                END IF
+                            SAHEN = D1 + D2
+                            UHEN = D1 * HWPU(LW,I) + D3 + D4 + D5
 
-                                WPU(LW,I)=UHEN/SAHEN
-                                IF(WPU(LW,I).GE.0.00)WPU(LW,I)=-1.3E-3      !-100.
+                            WPU(LW,I)=UHEN/SAHEN
 
-                            END DO
+                            IF(WPU(LW,I).GE.0.00)WPU(LW,I)=-1.3E-3      !-100.
+
                         END DO   !K
                     END DO   !LW
 
@@ -821,10 +660,10 @@ for NYEAR in range(1, period.LYEAR + 1):
                             L2=NALX(IW,K)
                             L5=walltypes[IW][K].num
                             DO I=L1,L2
-                                D1=(WPU(LW,I)-AWPU(LW,I))*OMG+AWPU(LW,I)
-                                D8=D1-AWPU(LW,I)
+                                c_liquid_i_pls=(WPU(LW,I)-AWPU(LW,I))*OMG+AWPU(LW,I)
+                                D8=c_liquid_i_pls-AWPU(LW,I)
                                 IF(ABS(D8).GT.AMAX2)AMAX2=ABS(D8)
-                                AWPU(LW,I)=D1
+                                AWPU(LW,I)=c_liquid_i_pls
                             END DO
                         END DO
                     END DO
@@ -874,49 +713,6 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     K=0
                     ITC=ITC+1
-
-                    for (n_i, room) in enumerate(rooms):
-
-                        I = n_i + 1
-
-                        for (n_lw, thin_wall) in enumerate(thin_walls):
-                            
-                            LW = n_lw + 1
-
-                            if thin_wall.room_sideB == I:
-
-                                t_srf = thin_wall.get_surf_temp(t_rm=room.t_n(n=n), t_out=oc.t_k)
-
-                                KMC=MCW(LW)
-
-                                KMC, XSUT = CWIF1(t=t_srf, x_air=room.x_v_n(n=n), mcw=KMC)
-
-                                MCW(LW)=KMC
-
-                                IF(MCW(LW).EQ.1)THEN
-                                    CW = (room.x_v_n(n=n) - XSUT) * dt * ALDC * thin_wall.area    !X1:ROOM, XSUT:WIN
-                                    CWV(LW)=CW
-                                    SCW(LW)=CW+SCW(LW)
-                                    IF(SCW(LW).GT.CWMAX)SCW(LW)=CWMAX
-                                    IF(SCW(LW).LE.0)THEN
-                                        MCW(LW)=0
-                                        SCW(LW)=0.
-                                        CWV(LW)=0.
-                                    END IF
-                                ELSE
-                                    KMC=MCW(LW)
-                                    KMC, XSUT = CWIF1(t=t_srf, x_air=room.x_v_n(n=n), mcw=KMC)
-                                    MCW(LW)=KMC
-                                    IF(MCW(LW).EQ.1)THEN
-                                        K=1
-                                    END IF
-                                END IF
-
-                                SCWDAY(LW,IM)=SCW(LW)
-
-                            END IF
-                        END DO
-                    END DO
     
                     IF(K.EQ.1)GO TO 710
     
@@ -985,7 +781,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                         IW=walls[LW].kwtype
                         L1=NAFX(IW,J)
                         L2=NALX(IW,J)
-                        D1=walltypes[IW].layers[J].dx
+                        c_liquid_i_pls=walltypes[IW].layers[J].dx
                         D2=WGT(LW,L1)*0.5
                         D2=D2+WGT(LW,L2)*0.5
 
@@ -1046,12 +842,12 @@ for NYEAR in range(1, period.LYEAR + 1):
                         END IF
     
                         DO I=L1,L2
-                            D1=TPDIS(LW,I,MON,DAY)
+                            c_liquid_i_pls=TPDIS(LW,I,MON,DAY)
                             D2=RHDIS(LW,I,MON,DAY)
-                            DLOSS = wdm.WOOD_ROT(LW, I, D1, D2, ROTOMG)
+                            DLOSS = wdm.WOOD_ROT(LW, I, c_liquid_i_pls, D2, ROTOMG)
                             WLOSS(LW,I)=WLOSS(LW,I)+DLOSS
                             IF(WLOSS(LW,I) > WLOSSMAX)DLOSS=0.
-                            WJW(LW,I)=HCOFF*DLOSS * wall.GMA[I] /86400.   ! Time unit:h=24,s=86400
+                            WJW(LW,I)=HCOFF*DLOSS * wall.GMA(I) /86400.   ! Time unit:h=24,s=86400
                         END DO 
                     END IF 
 
@@ -1093,45 +889,6 @@ def SATUWPT(TP)
     SW=(644243)+CPW*(TP-273.15)-TP*CPW*DLOG(TP/273.15)+461.5*TP*DLOG(VP/101325)
 
     return SW
-
-
-def CALDPDU(wpt, tp, gma, ml0, rg, row):
-    """
-    含水率変化に対するポテンシャル変化率 (DPDU) を計算する。
-    """
-    d1 = wpt
-    
-    # 元のFortranのロジック: 正の値の場合は -100.0 に強制
-    if d1 > 0.0:
-        d1 = -100.0
-    
-    # 差分幅の計算 (d1の1%)
-    dw = abs(d1 * 0.01)
-    
-    # 微小変化させた含水率
-    w1 = d1 + dw
-    w2 = d1 - dw
-    
-    # 以前定義した WPTRE (平衡相対湿度計算) を呼び出し
-    rh1 = WPTRE(w1, tp)
-    rh2 = WPTRE(w2, tp)
-    
-    # 外部定義されている前提の AHGANS
-    wd1 = ahgans(rhm=rh1, ml0=ml0)
-    wd2 = ahgans(rhm=rh2, ml0=ml0)
-    
-    # VGTの計算 (0.01は%を小数に戻す係数と推測)
-    vgt1 = 0.01 * wd1 * gma / row
-    vgt2 = 0.01 * wd2 * gma / row
-    
-    # 中央差分による勾配(微分値)の近似
-    # 0.5 * (VGT1 - VGT2) / DW
-    if dw != 0:
-        dpdu = 0.5 * (vgt1 - vgt2) / dw
-    else:
-        dpdu = 0.0
-        
-    return dpdu
 
 
 #::::::::サブルーチン追加
