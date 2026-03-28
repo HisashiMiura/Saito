@@ -577,12 +577,6 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                         for i in range(wall.n_mesh_total):
 
-                        for K in range(1, KMTL(IW)):
-                        
-                            L1 = NAFX(IW,K)
-                            L2 = NALX(IW,K)
-                            L5 = walltypes[IW][K].num
-                        
                             # *******  VENTED CAVITY  ******
 
                             t_i_mns = oc.t_k if wall.is_outside_surface(i) else TMP(LW,I-1)
@@ -599,7 +593,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                             D42 = (ALDT(LW,K,2) if wall.is_inside_end_point_is[i] else DTX(LW,I+1)) * (t_i_pls - t_i)
 
                             if wall.get_layer(i).num == 2:
-                                I=L1
+
                                 D4=0.
                                 D5=0.
                                 D1 = D21 + D22 +DGDUQ(LW,K)*QQ(LW,K)
@@ -618,12 +612,12 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 IF(RN(LW,I+1).GT.0.)THEN                                       ! D4 内側の水膜蒸発量 濡れ面率0.3
                                     t_srf=TMP(LW,I+1)
                                     FS, VP = GOFF(t_srf)
-                                    D4=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
+                                    D4=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
                                 IF(RN(LW,I-1).GT.0.)THEN                                       ! D5 外側の水膜蒸発量 濡れ面率0.3
                                     t_srf=TMP(LW,I-1)
                                     FS, VP = GOFF(t_srf)
-                                    D5=3.43E-08*(VP-XM(LW,L1))*walls[LW].area*0.3
+                                    D5=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
                                 UHEN=D2+D3+D4+D5
                                 SAHEN=D1
