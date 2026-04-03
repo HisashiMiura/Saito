@@ -130,6 +130,8 @@ for I in range(len(walltypes)):
                 # 通気層高さの合計
                 D2 = D2 + walls[LW].height
             if c_liquid_i_pls > 1E-12:
+                # αAの2乗の合計値
+                # この場合のαAは下端と上端の合成したαA
                 ALP_TOTAL(K)=1/SQRT(c_liquid_i_pls) 
                 HIGHT_CAVITY(K)=D2
 # 薄壁部位数
@@ -430,6 +432,8 @@ for NYEAR in range(1, period.LYEAR + 1):
                         GO TO 510
 
                     # *************換気計算収束判定********************
+                    # 最初はこの計算を飛ばして、2回目からこの判定を行う。
+                    # ITQ：換気と温度の収束計算の繰り返し回数
                     if ITQ > 1:
 
                         D1=0
@@ -448,6 +452,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 L5=walltypes[IW][K].num
                                 if wall.materials_is[i] == 2 and wall[K].alpha > 0.0:
                                     
+                                    # TMP 絶対温度
                                     D1 = abs(TMP(LW,L1)-ATP-ATMPQ(LW,L1))
                                     if D1 > D2:
                                         D2 = D1
@@ -466,25 +471,39 @@ for NYEAR in range(1, period.LYEAR + 1):
                             L2=NALX(I,K)
                             L5=walltypes[I][K].num
 
-                            DO LW=1,len(walls)
+                            for w, wall in enumerate(walls):
+                                LW = w + 1
                                 IW=walls[LW].kwtype
-                                IF(L5.EQ.2.AND.walls[IW][K].alpha.GT.0)THEN
+
+                                # alpha はαAのこと。αは密閉空気層の場合もありうる。
+                                # まず公開するのは複雑ではない計算。
+                                # まずは単純な一次元計算にする。
+                                IF( L5 == 2 and wall[K].alpha > 0.0)THEN
+                                    # 温度×高さの積算
                                     D1=D1+TMP(LW,L1)*walls[LW].height
                                 END IF
                             END DO
 
                             IF(HIGHT_CAVITY(K).GT.0.1)THEN
-                                TEMP_CAVITY(K)=D1/HIGHT_CAVITY(K)
+                                # 加重平均温度を計算
+                                TEMP_CAVITY(K) = D1 / HIGHT_CAVITY(K)
+                                # 353.25: kg K/m3
+                                # P V = n R T   P: N/m2, V: m3, n: kg, R: J/(kg K), T: K
+                                # n R / V = P / T * 何か定数
+                                # 353.25 は、大気圧(pa)101325わる乾燥空気の気体常数(J/(kg K) 287.05で計算した値。
+                                # kg/m3 が求まる。
                                 GMAQ1=353.25/(TEMP_CAVITY(K))
                                 GMAO=353.25/(oc.t_k)
-                                PQ1=GMAO-GMAQ1                       
+                                PQ1=GMAO-GMAQ1
+                                # 0.5 Δρ g h                       
                                 D1=0.5*ABS(PQ1)*HIGHT_CAVITY(K)*9.8                !中性帯　高さ中央 0.5, 重力加速度 g(ρ-ρ)
                             END IF
 
                             for i, wall in enumerate(walls):
                                 LW = i + 1
                                 IW = wall.kwtype
-                                IF(L5.EQ.2.AND.walls[IW][K].alpha.GT.0)QQ(LW,K)=DSQRT(D1)*4.*ALP_TOTAL(K)
+                                IF(L5.EQ.2.AND.walls[IW][K].alpha.GT.0)
+                                    QQ(LW,K)=DSQRT(D1)*4.*ALP_TOTAL(K)
                             END DO
                         END DO
                     END DO
@@ -548,19 +567,33 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 DGDU = get_dgdu(rh=RH1, t=t_srf)
                                 DGDT = get_dgdt(rh=RH1, t=t_srf)
 
+                                # 湿気伝達率 kg/(m2 s Pa))
                                 D4=3.43E-08*(D3-VP)*0.3                                       !****濡れ面率0.3  水膜からの蒸発量
 
                                 IF(L5.GE.10.AND.L5.LE.12)THEN                                 !バックシーラー透水抵抗 2.4e+5 m2sPa/kg by　長村
+                                    # 3.73：水分伝導率（材料番号が10～12）（セメント系材料：サイディングとか）　kg/ms(J/kg)
+                                    # 2.4：バックシーラー　塗膜が塗ってある　塗膜の抵抗　m2sPa/kg
+                                    # 抵抗値にして逆数にしてコンダクタンスになおしている。
                                     c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /3.73E-6+2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
                                 ELSE
+                                    # 木製品を想定　木製品の水分伝導率は、3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
+                                    # 瓦の5%になっている。（根拠はいまのところ不明）
                                     c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /(3.73E-6*0.05)+2.4E+5/DGDU)                 !木製品を想定
                                 END IF
 
-                                RN(I,J)=(c_liquid_i_pls*D2+D4+walls[I].get_swjrain(oc=oc, i=J))*3600/NDVD+HRN(I,J)            !******水膜の水分量kg/m2
+                                # 水幕の水分量（保持している水の量）, kg/m2
+                                # D2 はポテンシャル
+                                # D4 は蒸発量
+                                # HRN は前のステップの水分量
+                                RN(I,J)=(c_liquid_i_pls*D2+D4+walls[I].get_swjrain(oc=oc, i=J))*3600/NDVD + HRN(I,J)            !******水膜の水分量kg/m2
+                                # 水幕からの吸水量（表面に水幕があって材料に吸われる分）
+                                # 水幕が残っている場合は飽和水蒸気圧（水分伝導率で計算）
+
                                 WJRAIN(I,J)=-c_liquid_i_pls*D2*walls[LW].area
 
                                 IF(RN(I,J).LE.0)THEN
-                                    RN(I,J)=0.
+                                    RN(I,J)=0
+                                    # RNがゼロの場合は水幕がないので、雨水が直接材料に吸われることになる。
                                     WJRAIN(I,J) = walls[I].get_swjrain(oc=oc, i=J) *walls[LW].area+HRN(I,J)*walls[LW].area                      !******浸水量WJRAIN kg/s
                                 END IF
                             END IF
@@ -583,12 +616,14 @@ for NYEAR in range(1, period.LYEAR + 1):
                             t_i = TMP(LW,I)
                             t_i_pls = room_t_n(n=n) if wall.is_inside_surface(i) else TMP(LW,I+1)
                         
+                            # 水分化学ポテンシャルによる蒸気と液水の移動量に関するコンダクタンス, kg/s / (J / kg)
                             D21 = ALD(LW,K,1) if wall.is_outside_end_point_is[i] else DWX(LW,I)
                             D22 = ALD(LW,K,2) if wall.is_inside_end_point_is[i] else DWX(LW,I+1)
 
                             D31 = D21 * (oc.wp if wall.is_outside_surface(i) else WPU(i - 1))
                             D32 = D22 * (room.wp_n(n=n) if wall.is_inside_surface(i) else WPU(i+1))
 
+                            # 温度差による移動コンダクタンス (kg/s / K) に温度差をかけた値,  kg/s
                             D41 = (ALDT(LW,K,1) if wall.is_outside_end_point_is[i] else DTX(LW,I)) * (t_i_mns - t_i)
                             D42 = (ALDT(LW,K,2) if wall.is_inside_end_point_is[i] else DTX(LW,I+1)) * (t_i_pls - t_i)
 
@@ -596,22 +631,25 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                                 D4=0.
                                 D5=0.
-                                D1 = D21 + D22 +DGDUQ(LW,K)*QQ(LW,K)
+                                D1 = D21 + D22 + DGDUQ(LW,K)*QQ(LW,K)
                                 D2 = D31 + D32
                                 D3 = D41 + D42
                                 
                                 IF(LW.EQ.1)THEN
-                                    D2=D2+DGDUQ(LW,K)*QQ(LW,K) * oc.wp                              !最下層
-                                    D3=D3+DGDTQ(LW,K)*QQ(LW,K) * ( oc.t_k -TMP(LW,I))
-                                    UHEN=D1* wall.t_n_is[I] +D4+D5+1300.*QQ(LW,K) * oc.t_k                !D4,D5 不要?
+                                    D2 = D2 + DGDUQ(LW,K) * QQ(LW,K) * oc.wp                              !最下層
+                                    D3 = D3 + DGDTQ(LW,K) * QQ(LW,K) * ( oc.t_k -TMP(LW,I))
+                                    # UHEN=D1* wall.t_n_is[I] + D4+D5+1300.*QQ(LW,K) * oc.t_k                !D4,D5 不要?
                                 ELSE
-                                    D2=D2+DGDUQ(LW,K)*QQ(LW,K) * WPU(LW-1,I)                        !2階以上
-                                    D3=D3+DGDTQ(LW,K)*QQ(LW,K) * (TMP(LW-1,I)-TMP(LW,I))
+                                    # DGDUQ：水分化学ポテンシャルによる蒸気と液水の移動量に関するコンダクタンス, kg/s / (J / kg)
+                                    # DGDTQ：温度差による移動コンダクタンス (kg/s / K) に温度差をかけた値,  kg/s
+                                    D2 = D2 + DGDUQ(LW,K) * QQ(LW,K) * WPU(LW-1,I)                        !2階以上
+                                    D3 = D3 + DGDTQ(LW,K) * QQ(LW,K) * (TMP(LW-1,I)-TMP(LW,I))
                                 END IF
 
                                 IF(RN(LW,I+1).GT.0.)THEN                                       ! D4 内側の水膜蒸発量 濡れ面率0.3
                                     t_srf=TMP(LW,I+1)
                                     FS, VP = GOFF(t_srf)
+                                    # 3.43E-08: 湿気伝達率　kg/(m2 s Pa)
                                     D4=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
                                 IF(RN(LW,I-1).GT.0.)THEN                                       ! D5 外側の水膜蒸発量 濡れ面率0.3
@@ -619,6 +657,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                                     FS, VP = GOFF(t_srf)
                                     D5=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
+
                                 UHEN=D2+D3+D4+D5
                                 SAHEN=D1
                                 WPU(LW,I)=UHEN/SAHEN
@@ -634,6 +673,8 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                             D4 = D41 + D42
 
+                            # WJRAIN 雨水由来の浸入量
+                            # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量
                             D5 = WJRAIN(LW,I) + WJW(LW,I) * wall.dx_is[i] * wall.area # WJRAIN(LW,I)!
 
                             SAHEN = D1 + D2

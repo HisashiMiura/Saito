@@ -213,7 +213,7 @@ class Wall:
         self.state.t_n_pls[i] = t_n_pls
 
     def RMDL(self, i: int):
-        """液体伝導率, kg/(m s (J/kg))"""
+        """水分伝導率, kg/(m s (J/kg))"""
 
         if self.rh[i] > 90.0 and self.materials_is[i].id == 5:
             return DIFF(n_mat=self.materials_is[i].id, rh=self.rh[i], k=self.t_n_pls[i])
@@ -232,6 +232,9 @@ class Wall:
             return self.materials_is[i].rmdd
     
     def ADWLX(self, i: int) -> float:
+        """水分化学ポテンシャル駆動による液水移動量（コンダクタンス）, kg/s / (J/kg)"""
+        # RMDL: 水分伝導率, kg/(m s (J/kg))
+        # kg/(m s (J/kg)) * m2 / m = kg/s / (J/kg)
         return self.RMDL(i) * self.area / self.dx_is[i]
     
     def ADTGX(self, i: int) -> float:
@@ -242,10 +245,13 @@ class Wall:
         return self.RMDG(i) * self.dgdt(i) * self.area / self.dx_is[i]
     
     def ADWGX(self, i: int) -> float:
-        """"""
+        """水分化学ポテンシャル駆動による水蒸気移動量（コンダクタンス）, kg/s / (J/kg)"""
+        # RMDG：湿気伝導率, kg /(m s Pa)
+        # kg / (m s Pa) * Pa / (J/kg) * m2 / m = kg/s / (J/kg)
         return self.RMDG(i) * self.dgdu(i) * self.area / self.dx_is[i]
 
     def ADWX(self, i: int) -> float:
+        # kg/s / (J/kg)
         return self.ADWGX(i) + self.ADWLX(i)
     
     def DWX(self, i: int) -> float:
@@ -505,7 +511,8 @@ class Wall:
             )
 
             if self.get_layer(i).num == 2:
-                # 空気層の場合に移流分を考慮する。                                
+                # 空気層の場合に移流分を考慮する。
+                # 空気の容積比熱, J/(m3 K)                             
                 UHEN =+ 1300.0 * QQ * t_upstream
                 SAHEN =+ 1300.0 * QQ
             
@@ -607,7 +614,7 @@ class Wall:
 
                 # TODO: Wind_direction の定義をきちんと確認しないといけない。この式のままだと、北側から時計回りか？
                 # 水平方向などにも対応させないといけないのではないか？
-
+                # この式は垂直壁にしか対応していないので、3次元的にcosを計算する必要あり。
                 d2 = np.maximum(
                     nrain.ratio * x * np.cos(np.radians(wind_direction - (180.0 + self.direction.alpha))) * FE * FD * FL,
                     0.0
@@ -640,6 +647,9 @@ class Wall:
         confrains = self.get_confrains(v_wind=oc.v_wind, wind_direction=oc.wind_direction)
 
         # 材表面への浸水量 kg/(m2 s)
+        # rainfall mm/h
+        # confrains: 
+        # 浸水率をパーセントでいれているので、ここで単位換算している。
         swjrains = 0.01 * oc.rainfall * confrains / 3600.0
 
         for (nrain, swjrain) in (self.nrains, swjrains):
