@@ -303,6 +303,7 @@ def CALDPDU(wpt, tp, gma, ml0, row):
     含水率変化に対するポテンシャル変化率 (DPDU) を計算する。(J/kg)/K
     gma:kg/m3
     TODO: 単位がよくわからない。
+    row: kg/m3
     """
     d1 = wpt
     

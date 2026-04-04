@@ -29,7 +29,7 @@ DIMENSION NX(NWP)
 DIMENSION WGT(NWP,NXP)
 DIMENSION DTX(NWP,NXP+1)
 DIMENSION ADTX(NWP,NXP+1)
-DIMENSION ALD(NWP,KMTLP,2), ALDT(NWP,KMTLP,2)
+DIMENSION ALDT(NWP,KMTLP,2)
 DIMENSION ALP_TOTAL(KMTLP),TEMP_CAVITY(KMTLP),HIGHT_CAVITY(KMTLP)
 DIMENSION KMTL(KMTLP),WOUTAV(50)
 
@@ -358,14 +358,11 @@ for NYEAR in range(1, period.LYEAR + 1):
                             DO I=L1,L2
 
                                 IF(I.EQ.L1)THEN
-                                    # (kg / s) / (J / kg) = kg/(m2 s Pa) * Pa / (J / kg) * m2
-                                    ALD(LW,K,1) = wall.layers[k].cond_m_o * wall.dgdu(i) * wall.area
                                     # (kg / s) / K = kg/(m2 s Pa) * Pa / K * m2
                                     ALDT(LW,K,1) = wall.layers[k].cond_m_o* wall.dgdt(i) * wall.area
                                 END IF
 
                                 IF(I.EQ.L2)THEN
-                                    ALD(LW,K,2) = wall.layers[k].cond_m_i * wall.dgdu(i) * wall.area
                                     ALDT(LW,K,2) = wall.layers[k].cond_m_i* wall.dgdt(i) * wall.area
                                 END IF
 
@@ -609,41 +606,58 @@ for NYEAR in range(1, period.LYEAR + 1):
                         IW = wall.kwtype
 
                         for i in range(wall.n_mesh_total):
+                            
+                            # (kg/s)/(J/kg)
+                            SAHEN = 0.0
+                            # kg/s
+                            UHEN = 0.0
 
-                            # *******  VENTED CAVITY  ******
+                            if wall.get_layer(i).num == 2:
+                                m_cap = 0.0
+                            else:
+                                m_cap = ROW * wall.DPDU(i=i, wpt=WPU(LW,i), tp=TMP(LW,i)) * wall.v_is[i] / dt
+
+                            SAHEN += wall.m_cap(i=i, wp_is=WPU(LW,i))
+                            UHEN += wall.m_cap(i=i, wp_is=WPU(LW,i)) * HWPU(LW,I)
 
                             t_i_mns = oc.t_k if wall.is_outside_surface(i) else TMP(LW,I-1)
                             t_i = TMP(LW,I)
                             t_i_pls = room_t_n(n=n) if wall.is_inside_surface(i) else TMP(LW,I+1)
-                        
+
                             # 水分化学ポテンシャルによる蒸気と液水の移動量に関するコンダクタンス, kg/s / (J / kg)
-                            D21 = ALD(LW,K,1) if wall.is_outside_end_point_is[i] else DWX(LW,I)
-                            D22 = ALD(LW,K,2) if wall.is_inside_end_point_is[i] else DWX(LW,I+1)
+                            if wall.is_outside_end_point_is[i]:
+                                # (kg / s) / (J / kg) = kg/(m2 s Pa) * Pa / (J / kg) * m2
+                                D21 = wall.layers[k].cond_m_o * wall.dgdu(i) * wall.area
+                            else:
+                                D21 = wall.DWX(i=i)
+                            if wall.is_inside_end_point_is[i]:
+                                D22 = wall.layers[k].cond_m_i * wall.dgdu(i) * wall.area
+                            else:
+                                D22 = wall.DWX(i=i+1)
+                            SAHEN += D21 + D22
 
                             D31 = D21 * (oc.wp if wall.is_outside_surface(i) else WPU(i - 1))
                             D32 = D22 * (room.wp_n(n=n) if wall.is_inside_surface(i) else WPU(i+1))
+                            UHEN += D31 + D32
 
                             # 温度差による移動コンダクタンス (kg/s / K) に温度差をかけた値,  kg/s
                             D41 = (ALDT(LW,K,1) if wall.is_outside_end_point_is[i] else DTX(LW,I)) * (t_i_mns - t_i)
                             D42 = (ALDT(LW,K,2) if wall.is_inside_end_point_is[i] else DTX(LW,I+1)) * (t_i_pls - t_i)
+                            UHEN += D41 + D42
 
                             if wall.get_layer(i).num == 2:
 
                                 D4=0.
                                 D5=0.
-                                D1 = D21 + D22 + DGDUQ(LW,K)*QQ(LW,K)
-                                D2 = D31 + D32
-                                D3 = D41 + D42
-                                
+
                                 IF(LW.EQ.1)THEN
-                                    D2 = D2 + DGDUQ(LW,K) * QQ(LW,K) * oc.wp                              !最下層
-                                    D3 = D3 + DGDTQ(LW,K) * QQ(LW,K) * ( oc.t_k -TMP(LW,I))
-                                    # UHEN=D1* wall.t_n_is[I] + D4+D5+1300.*QQ(LW,K) * oc.t_k                !D4,D5 不要?
+                                    D2 = DGDUQ(LW,K) * QQ(LW,K) * oc.wp                              !最下層
+                                    D3 = DGDTQ(LW,K) * QQ(LW,K) * ( oc.t_k -TMP(LW,I))
                                 ELSE
                                     # DGDUQ：水分化学ポテンシャルによる蒸気と液水の移動量に関するコンダクタンス, kg/s / (J / kg)
                                     # DGDTQ：温度差による移動コンダクタンス (kg/s / K) に温度差をかけた値,  kg/s
-                                    D2 = D2 + DGDUQ(LW,K) * QQ(LW,K) * WPU(LW-1,I)                        !2階以上
-                                    D3 = D3 + DGDTQ(LW,K) * QQ(LW,K) * (TMP(LW-1,I)-TMP(LW,I))
+                                    D2 = DGDUQ(LW,K) * QQ(LW,K) * WPU(LW-1,I)                        !2階以上
+                                    D3 = DGDTQ(LW,K) * QQ(LW,K) * (TMP(LW-1,I)-TMP(LW,I))
                                 END IF
 
                                 IF(RN(LW,I+1).GT.0.)THEN                                       ! D4 内側の水膜蒸発量 濡れ面率0.3
@@ -652,33 +666,25 @@ for NYEAR in range(1, period.LYEAR + 1):
                                     # 3.43E-08: 湿気伝達率　kg/(m2 s Pa)
                                     D4=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
+
                                 IF(RN(LW,I-1).GT.0.)THEN                                       ! D5 外側の水膜蒸発量 濡れ面率0.3
                                     t_srf=TMP(LW,I-1)
                                     FS, VP = GOFF(t_srf)
                                     D5=3.43E-08*(VP-XM(LW,i))*walls[LW].area*0.3
                                 END IF
 
-                                UHEN=D2+D3+D4+D5
-                                SAHEN=D1
+                                UHEN += D2 + D3 + D4 + D5
+                                SAHEN += DGDUQ(LW,K)*QQ(LW,K)
                                 WPU(LW,I)=UHEN/SAHEN
                                 IF(WPU(LW,I).GE.0.00)WPU(LW,I)=-1.3E-4
                                 CYCLE
                             END IF
 
-                            D1 = ROW * wall.DPDU(i=I, wpt=WPU(LW,I), tp=TMP(LW,I)) * wall.v_is[I] / dt / 2
-
-                            D2 = D21 + D22
-
-                            D3 = D31 + D32
-
-                            D4 = D41 + D42
-
                             # WJRAIN 雨水由来の浸入量
                             # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量
                             D5 = WJRAIN(LW,I) + WJW(LW,I) * wall.dx_is[i] * wall.area # WJRAIN(LW,I)!
 
-                            SAHEN = D1 + D2
-                            UHEN = D1 * HWPU(LW,I) + D3 + D4 + D5
+                            UHEN += D5
 
                             WPU(LW,I)=UHEN/SAHEN
 

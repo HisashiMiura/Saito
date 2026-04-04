@@ -261,6 +261,7 @@ class Wall:
 
     def DPDU(self, i: int, wpt: float, tp: float):
         """(J/kg)/K"""
+        # 1/(J/kg)
         return CALDPDU(wpt=wpt, tp=tp, gma=self.GMA[i], ml0=self.get_layer(i).num, row=ROW)
     
     def ADTLX(self, i: int, wpt: float, tp: float):
@@ -330,6 +331,18 @@ class Wall:
         else:
             return self.v_is[i] * self.gcp_is[i]
 
+    def m_cap(self, i: int, wp_is: np.ndarray) -> float:
+        """水分移動に伴う熱容量, kg/(J/kg)"""
+
+        # 質点iが空気層の場合
+        if self.get_layer(i).num == 2:
+            # 空気層の場合の熱容量はなし？
+            return 0.0
+        else:
+            # kg/m3 * 1/(J/kg) * m3 = kg/(J/kg)
+            # ここの式の単位変換はあっているのか？
+            return ROW * self.DPDU(i=i, wpt=wp_is[i], tp=self.t_n_is[i]) * self.v_is[i]
+
     def get_c_t_i_mns(self, i: int) -> float:
         """温度差を駆動力とする熱移動に関する係数（室外側）, W/K"""
     
@@ -363,7 +376,7 @@ class Wall:
                 x=(self.lambda_is[i+1] + RW * self.RMDG(i+1) * self.dgdt(i+1)) / self.dx_is[i+1],
                 y=(self.lambda_is[i] + RW * self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
             ) * self.area
-    
+        
     def get_c_wp_i_mns(self, i: int) -> float:
         """水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室外側）, W/(J/kg)"""
 
