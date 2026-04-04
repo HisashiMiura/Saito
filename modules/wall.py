@@ -8,7 +8,7 @@ from .sat_temp import get_theta_sat_d_t
 from .weather import OutdoorCondition
 from config import HOI
 from nrain import NRAIN, get_nrains_of_walls
-from .thermo_dynamics import ATP, DIFF, get_dgdt, get_dgdu, get_wp, RW, CALDPDU, ROW, CPL
+from .thermo_dynamics import ATP, DIFF, get_dgdt, get_dgdu, get_wp, RW, CALDPDU, ROW, CPL, GOFF
 from .direction import Direction
 from .materials import Materials, Material
 
@@ -193,6 +193,10 @@ class Wall:
     # ステップnの水分化学ポテンシャル, J/kg, [I]
     wp_n_is: np.ndarray
 
+    def p_sv(self, i: int) -> float:
+        """飽和水蒸気圧, Pa"""
+        return GOFF(t=self.t_n_is[i])[1]
+
     @property    
     def rh(self):
         """相対湿度, %"""
@@ -225,51 +229,18 @@ class Wall:
     
     def RMDG(self, i: int) -> float:
         """湿気伝導率, kg /(m s Pa) """
+        # 後退差分において湿気伝導率の値は相対湿度に依存性があるが前の時刻の相対湿度を用いることにより線形化している。
         if self.materials_is[i].id == 5:
             d1 = self.rh[i] * 0.01
             return 1.87E-11 * d1**2.4019 * math.exp(-0.78864 * ( 1 - d1**1.1471))  #*3.45   !  Moisture conductivity (kg/msPa)  ASHRAE
         else:
             return self.materials_is[i].rmdd
     
-    def ADWLX(self, i: int) -> float:
-        """水分化学ポテンシャル駆動による液水移動量（コンダクタンス）, kg/s / (J/kg)"""
-        # RMDL: 水分伝導率, kg/(m s (J/kg))
-        # kg/(m s (J/kg)) * m2 / m = kg/s / (J/kg)
-        return self.RMDL(i) * self.area / self.dx_is[i]
-    
-    def ADTGX(self, i: int) -> float:
-        """"""
-        # RMDG: 湿気伝導率, kg / (m s Pa)
-        # dgdt: Pa / K
-        # (kg / s) / K
-        return self.RMDG(i) * self.dgdt(i) * self.area / self.dx_is[i]
-    
-    def ADWGX(self, i: int) -> float:
-        """水分化学ポテンシャル駆動による水蒸気移動量（コンダクタンス）, kg/s / (J/kg)"""
-        # RMDG：湿気伝導率, kg /(m s Pa)
-        # kg / (m s Pa) * Pa / (J/kg) * m2 / m = kg/s / (J/kg)
-        return self.RMDG(i) * self.dgdu(i) * self.area / self.dx_is[i]
-
-    def ADWX(self, i: int) -> float:
-        # kg/s / (J/kg)
-        return self.ADWGX(i) + self.ADWLX(i)
-    
-    def DWX(self, i: int) -> float:
-        # 計算した値を平均する方が良い。逆数同士足した値の逆数がベター
-        # 本来であれば、逆数の和の逆数にすべきだが、片方がゼロになる場合はゼロ割の可能性があるので注意が必要。
-        return (self.ADWX(i) + self.ADWX(i - 1)) / 2
-
     def DPDU(self, i: int, wpt: float, tp: float):
         """(J/kg)/K"""
         # 1/(J/kg)
         return CALDPDU(wpt=wpt, tp=tp, gma=self.GMA[i], ml0=self.get_layer(i).num, row=ROW)
     
-    def ADTLX(self, i: int, wpt: float, tp: float):
-        return self.RMDL(i) * self.DPDU(i=i, wpt=wpt, tp=tp) * self.area / self.dx_is[i]
-    
-    def DTLX(self, i: int, wpts: list[float], tps: list[float]):
-        return (self.ADTXL(i=i, wpt=wpts[i], tp=tps[i]) + self.ADTXL(i=i-1, wpt=wpts[i-1], tp=tps[i-1]) )*0.5
-
     def GMA(self, i: int) -> float:
         """密度, kg/m3"""
         return self.materials_is[i].GMA
@@ -343,184 +314,196 @@ class Wall:
             # ここの式の単位変換はあっているのか？
             return ROW * self.DPDU(i=i, wpt=wp_is[i], tp=self.t_n_is[i]) * self.v_is[i]
 
-    def get_c_t_i_mns(self, i: int) -> float:
-        """温度差を駆動力とする熱移動に関する係数（室外側）, W/K"""
+    def _c_h_t_i_mns(self, i: int) -> float:
+        """温度差を駆動力とする熱移動に関する係数（室外側）, W/(K m2)"""
     
         # 各レイヤの室外側の端点の場合
         if self.is_outside_end_point_is[i]:
                                     
             # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return (self.get_layer(i).cond_h_o + RW * self.get_layer(i).cond_m_o * self.dgdt(i)) * self.area
+            return self.get_layer(i).cond_h_o
 
         else:
-            # ( 熱伝導率 W/(m K) + 水の蒸発潜熱 J/kg * 温度勾配に対する水分伝導率 (kg/(m s K)) ) / 質点間距離 m * 面積 m2
-            # 水の蒸発潜熱 2.512 * 10^6 J/kg
-            # 温度勾配に対する水分伝導率 lambda_(T,g)
-            # RMDG：湿気伝導率, kg / (m s Pa)
             return self.get_series_combination(
-                x=(self.lambda_is[i-1] + RW * self.RMDG(i-1) * self.dgdt(i-1)) / self.dx_is[i-1],
-                y=(self.lambda_is[i] + RW * self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
-            ) * self.area
+                x=(self.lambda_is[i-1]) / self.dx_is[i-1],
+                y=(self.lambda_is[i]) / self.dx_is[i]
+            )
     
-    def get_c_t_i_pls(self, i: int) -> float:
-        """温度差を駆動力とする熱移動に関する係数（室内側）, W/K"""
+    def _c_h_t_i_pls(self, i: int) -> float:
+        """温度差を駆動力とする熱移動に関する係数（室内側）, W/(K m2)"""
 
         # 各レイヤの室内側の端点の場合
         if self.is_inside_end_point_is[i]:
 
             # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return (self.get_layer(i).cond_h_i + RW * self.get_layer(i).cond_m_i * self.dgdt(i)) * self.area
-        
+            return self.get_layer(i).cond_h_i
+
         else:
             return self.get_series_combination(
-                x=(self.lambda_is[i+1] + RW * self.RMDG(i+1) * self.dgdt(i+1)) / self.dx_is[i+1],
-                y=(self.lambda_is[i] + RW * self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
-            ) * self.area
-        
-    def get_c_wp_i_mns(self, i: int) -> float:
-        """水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室外側）, W/(J/kg)"""
+                x=(self.lambda_is[i+1]) / self.dx_is[i+1], 
+                y=(self.lambda_is[i]) / self.dx_is[i]
+            )
+
+    def _c_vap_t_i_mns(self, i: int) -> float:
+        """温度差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/K"""
+
+        # 各レイヤの室外側の端点の場合
+        if self.is_outside_end_point_is[i]:
+                                    
+            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
+            return self.get_layer(i).cond_m_o * self.dgdt(i)
+
+        else:
+            # RMDG：湿気伝導率, kg / (m s Pa)
+            # dgdt：水蒸気圧の温度勾配, Pa/K
+            return self.get_series_combination(
+                x=(self.RMDG(i-1) * self.dgdt(i-1)) / self.dx_is[i-1],
+                y=(self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
+            )
+
+    def _c_vap_t_i_pls(self, i: int) -> float:
+        """温度差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/K"""
+
+        # 各レイヤの室内側の端点の場合
+        if self.is_inside_end_point_is[i]:
+
+            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
+            return self.get_layer(i).cond_m_i * self.dgdt(i)
+
+        else:
+            return self.get_series_combination(
+                x=(self.RMDG(i+1) * self.dgdt(i+1)) / self.dx_is[i+1],
+                y=(self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
+            )
+
+    def _c_liq_t_i_mns(self, i: int) -> float:
+        """温度差を駆動力とする液水移動に関する係数（室外側）, (kg/(s m2))/K"""
+
+        if self.is_outside_end_point_is[i]:
+            return 0.0
+        else:
+            return self.get_series_combination(
+                x=self.RMDL(i-1) * self.DPDU(i=i-1, wpt=self.wp_n_is[i-1], tp=self.t_n_is[i-1]) / self.dx_is[i-1],
+                y=self.RMDL(i) * self.DPDU(i=i, wpt=self.wp_n_is[i], tp=self.t_n_is[i]) / self.dx_is[i]
+            )
+    
+    def _c_liq_t_i_pls(self, i: int) -> float:
+        """温度差を駆動力とする液水移動に関する係数（室内側）, (kg/(s m2))/K"""
+
+        if self.is_inside_end_point_is[i]:
+            return 0.0
+        else:
+            return self.get_series_combination(
+                x=self.RMDL(i+1) * self.DPDU(i=i+1, wpt=self.wp_n_is[i+1], tp=self.t_n_is[i+1]) / self.dx_is[i+1],
+                y=self.RMDL(i) * self.DPDU(i=i, wpt=self.wp_n_is[i], tp=self.t_n_is[i]) / self.dx_is[i]
+            )
+
+    def _c_vap_wp_i_mns(self, i: int) -> float:
+        """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
 
         # 各レイヤの室外側の端点の場合
         if self.is_outside_end_point_is[i]:
             # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            # 水の蒸発潜熱 J/kg * 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = W/(J/kg) 
-            return RW * self.get_layer(i).cond_m_o * self.dgdu(i) * self.area
+            # 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = (kg/s)/(J/kg) 
+            return self.get_layer(i).cond_m_o * self.dgdu(i)
         else:
-            # RW: 蒸発潜熱, J/kg    2.512 * 10^6
-            # DWGX: 蒸気成分の伝導率, kg/s / (J/kg)
-            # J/kg * (kg/s) / (J/kg) = W / (J/kg)
             # RMDG: 湿気伝導率, kg/(m s Pa)
-            # J/kg * kg/(m s Pa) * Pa/(J/kg) / m * m2
+            # dgdu: 水分化学ポテンシャルに対する水蒸気圧の微分, Pa / (J/kg)
             return self.get_series_combination(
-                x=RW * self.RMDG(i-1) * self.dgdu[i-1] / self.dx_is[i-1],
-                y=RW * self.RMDG(i) * self.dgdu[i] / self.dx_is[i]
-            ) * self.area
+                x=self.RMDG(i-1) * self.dgdu[i-1] / self.dx_is[i-1],
+                y=self.RMDG(i) * self.dgdu[i] / self.dx_is[i]
+            )
     
-    def get_c_wp_i_pls(self, i: int) -> float:
-        """水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室内側）, W/(J/kg)"""
+    def _c_vap_wp_i_pls(self, i: int) -> float:
+        """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
 
         # 各レイヤの室内側の端点の場合
         if self.is_inside_end_point_is[i]:
             # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            # 水の蒸発潜熱 J/kg * 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = W/(J/kg) 
-            return RW * self.get_layer(i).cond_m_i * self.dgdu(i) * self.area
+            # 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = W/(J/kg) 
+            return self.get_layer(i).cond_m_i * self.dgdu(i)
         else:
             return self.get_series_combination(
-                x=RW * self.RMDG(i+1) * self.dgdu[i+1] / self.dx_is[i+1],
-                y=RW * self.RMDG(i) * self.dgdu[i] / self.dx_is[i]
-            ) * self.area
-
-    def get_c_liquid_i_mns(self, i: int, wp_i_mns: float, wp_i: float, t_i_mns: float, t_i: float):
-        """液水移動による熱の移動"""
+                x=self.RMDG(i+1) * self.dgdu[i+1] / self.dx_is[i+1],
+                y=self.RMDG(i) * self.dgdu[i] / self.dx_is[i]
+            )
+    
+    def _c_liq_wp_i_mns(self, i: int) -> float:
+        """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
 
         if self.is_outside_end_point_is[i]:
             return 0.0
         else:
-            # 水分化学ポテンシャル駆動の液水移動の係数, (kg/s)/(m2 J/kg)
-            dwlx = self.get_series_combination(
+            return self.get_series_combination(
                 x=self.RMDL(i-1) / self.dx_is[i-1],
                 y=self.RMDL(i) / self.dx_is[i]
             )
-
-            # 温度差駆動の液水移動の係数, (kg/s)/(m2 K) = kg/(m s (J/kg)) * (J/kg)/K / m
-            dtlx = self.get_series_combination(
-                x=self.RMDL(i-1) * self.DPDU(i=i-1, wpt=wp_i_mns, tp=t_i_mns) / self.dx_is[i-1],
-                y=self.RMDL(i) * self.DPDU(i=i, wpt=wp_i, tp=t_i) / self.dx_is[i]
-            )
-
-            # CPL: 水の比熱 = 4200.0 J/(kg K)
-            return CPL * (dwlx * (wp_i_mns - wp_i) + dtlx * (t_i_mns - t_i)) * self.area
-
-    def get_c_liquid_i_pls(self, i: int, wp_i_pls: float, wp_i: float, t_i_pls: float, t_i: float):
-        """液水移動による熱の移動"""
+    
+    def _c_liq_wp_i_pls(self, i: int) -> float:
+        """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
 
         if self.is_inside_end_point_is[i]:
             return 0.0
         else:
-            # 水分化学ポテンシャル駆動の液水移動の係数, (kg/s)/(m2 J/kg)
-            dwlx = self.get_series_combination(
+            return self.get_series_combination(
                 x=self.RMDL(i+1) / self.dx_is[i+1],
                 y=self.RMDL(i) / self.dx_is[i]
             )
 
-            # 温度差駆動の液水移動の係数, (kg/s)/(m2 K) = kg/(m s (J/kg)) * (J/kg)/K / m
-            dtlx = self.get_series_combination(
-                x=self.RMDL(i+1) * self.DPDU(i=i+1, wpt=wp_i_pls, tp=t_i_pls) / self.dx_is[i+1],
-                y=self.RMDL(i) * self.DPDU(i=i, wpt=wp_i, tp=t_i) / self.dx_is[i]
-            )
-
-            # CPL: 水の比熱 = 4200.0 J/(kg K)
-            return CPL * (dwlx * (wp_i_pls - wp_i) + dtlx * (t_i_pls - t_i)) * self.area
-
     def get_t_n_pls(self, t_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, QQ: float, t_upstream: float):
 
-        t_is_next = np.zeros(t_is, dtype=float)
+        t_is_next = np.zeros_like(t_is, dtype=float)
 
         for i in range(self.n_mesh_total):
 
-            t_i = t_is(i)
+            ### 質点の温度
+            # 室外側
+            t_i_mns = self.get_t_surf_out(oc=oc, theta_r=theta_r_n) if self.is_outside_surface(i=i) else t_is[i - 1]
+            # 中央（後退差分計算において温度については繰り返し計算に用いる温度を採用する。）
+            t_i = t_is[i]
+            # 室内側
+            t_i_pls = theta_r_n if self.is_inside_surface(i=i) else t_is[i + 1]
 
-            # 室外側の質点の温度
-            # 室外側の質点の水分ポテンシャル
-
-            # 質点が室外側表面の場合
-            if self.is_outside_surface(i=i):
-                t_i_mns = self.get_t_surf_out(oc=oc, theta_r=theta_r_n)
-                wp_i_mns = oc.wp
-            else:
-                t_i_mns = t_is[i - 1]
-                wp_i_mns = self.wp_n_is[i - 1]
-
+            ### 質点の水分化学ポテンシャル
+            # 室外側
+            wp_i_mns = oc.wp if self.is_outside_surface(i=i) else self.wp_n_is[i - 1]
+            # 中央（後退差分計算において水分化学ポテンシャルについては前のステップの値を用いる。）
             wp_i = self.wp_n_is[i]
+            # 室内側
+            wp_i_pls = wp_r_n if self.is_inside_surface(i=i) else self.wp_n_is[i + 1]
 
-            # 室内側の質点の温度
-            # 質点が室内側表面の場合
-            if self.is_inside_surface(i=i):
-                t_i_pls = theta_r_n
-                wp_i_pls = wp_r_n
-            else:
-                t_i_pls = t_is[i + 1]
-                wp_i_pls = self.wp_n_is[i + 1]
+            # 温度差を駆動力とする熱移動に関する係数, W/K
+            c_h_t_i_mns = (self._c_h_t_i_mns(i) + RW * self._c_vap_t_i_mns(i)) * self.area
+            c_h_t_i_pls = (self._c_h_t_i_pls(i) + RW * self._c_vap_t_i_pls(i)) * self.area
 
+            # 水分化学ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数, W/(J/kg)
+            c_wp_i_mns = RW * self._c_vap_wp_i_mns(i) * self.area
+            c_wp_i_pls = RW * self._c_vap_wp_i_pls(i) * self.area
 
-            # 温度差を駆動力とする熱移動に関する係数（室外側）, W/K
-            c_t_i_mns = self.get_c_t_i_mns(i)
-
-            # 温度差を駆動力とする熱移動に関する係数（室内側）, W/K
-            c_t_i_pls = self.get_c_t_i_pls(i)
-
-            # 水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室外側）, W/(J/kg)
-            c_wp_i_mns = self.get_c_wp_i_mns(i)
-
-            # 水分ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数（室内側）, W/(J/kg)
-            c_wp_i_pls = self.get_c_wp_i_pls(i)
-
-            # 液水移動に伴う熱移動（室外側）, W/K
-            c_liquid_i_mns = self.get_c_liquid_i_mns(i=i, wp_i_mns=wp_i_mns, wp_i=wp_i, t_i_mns=t_i_mns, t_i=t_i)
-
-            # 液水移動に伴う熱移動（室内側）, W/K
-            c_liquid_i_pls = self.get_c_liquid_i_pls(i=i, wp_i_pls=wp_i_pls, wp_i=wp_i, t_i_pls=t_i_pls, t_i=t_i)
+            # 液水移動量, kg/s
+            j_liq_i_mns = (self._c_liq_wp_i_mns(i) * (wp_i_mns - wp_i) + self._c_liq_t_i_mns(i) * (t_i_mns - t_i)) * self.area
+            j_liq_i_pls = (self._c_liq_wp_i_pls(i) * (wp_i_pls - wp_i) + self._c_liq_t_i_pls(i) * (t_i_pls - t_i)) * self.area
 
             cap = self.cap(i) / dt
 
             # W
             UHEN = (
                 cap * self.t_n_is[i]
-                + c_t_i_mns * t_i_mns
-                + c_t_i_pls * t_i_pls
+                + c_h_t_i_mns * t_i_mns
+                + c_h_t_i_pls * t_i_pls
                 + c_wp_i_mns * (wp_i_mns - wp_i)
                 + c_wp_i_pls * (wp_i_pls - wp_i)
-                + c_liquid_i_mns * t_i_mns
-                + c_liquid_i_pls * t_i_pls
+                + CPL * j_liq_i_mns * t_i_mns
+                + CPL * j_liq_i_pls * t_i_pls
             )
 
             # W/K
             SAHEN = (
                 cap
-                + c_t_i_mns
-                + c_t_i_pls
-                + c_liquid_i_mns
-                + c_liquid_i_pls
+                + c_h_t_i_mns
+                + c_h_t_i_pls
+                + CPL * j_liq_i_mns
+                + CPL * j_liq_i_pls
             )
 
             if self.get_layer(i).num == 2:
@@ -533,7 +516,107 @@ class Wall:
 
         return t_is_next
           
+    def get_wp_n_pls(
+            self, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, wp_is: np.ndarray,
+            QQ: float, RN: np.ndarray, XM: np.ndarray, WJRAIN: np.ndarray, WJW: np.ndarray):
+        """ステップn+1における水分化学ポテンシャルを求める。"""
 
+        wp_n_pls = np.zeros_like(self.wp_n_is, dtype=float)
+
+        for i in range(self.n_mesh_total):
+            
+            # 質点の温度
+            # 室外側
+            t_i_mns = oc.t_k if self.is_outside_surface(i=i) else self.t_n_is[i - 1]
+            # 中央（後退差分計算において温度については前のステップの値を用いる。）
+            t_i = self.t_n_is[i]
+            # 室内側
+            t_i_pls = theta_r_n + ATP if self.is_inside_surface(i=i) else self.t_n_is[i + 1]
+
+            # 質点の水分化学ポテンシャル
+            # 室外側
+            wp_i_mns = oc.wp if self.is_outside_surface(i=i) else wp_is[i - 1]
+            # 中央
+            wp_i = wp_is[i]
+            # 室内側
+            wp_i_pls = wp_r_n if self.is_inside_surface(i=i) else wp_is[i + 1]
+
+            # 水分化学ポテンシャル差を駆動力とする水分（水蒸気＋液水）移動に関する係数, (kg/s) / (J/kg)
+            c_vap_liq_wp_i_mns = (self._c_vap_wp_i_mns(i=i) + self._c_liq_wp_i_mns(i=i)) * self.area
+            c_vap_liq_wp_i_pls = (self._c_vap_wp_i_pls(i=i) + self._c_liq_wp_i_pls(i=i)) * self.area
+
+            # 温度差を駆動力とする水分（水蒸気＋液水）移動量,  (kg/s)
+            j_vap_liq_i_mns = (self._c_vap_t_i_mns(i=i) + self._c_liq_t_i_mns(i=i)) * self.area * (t_i_mns - t_i)
+            j_vap_liq_i_pls = (self._c_vap_t_i_pls(i=i) + self._c_liq_t_i_pls(i=i)) * self.area * (t_i_pls - t_i)
+
+            # (kg/s)/(J/kg)
+            SAHEN = (
+                self.m_cap(i=i, wp_is=wp_i) / dt
+                + c_vap_liq_wp_i_mns
+                + c_vap_liq_wp_i_pls
+            )
+
+            # kg/s
+            UHEN = (
+                self.m_cap(i=i, wp_is=wp_i) / dt * self.wp_n_is[i]
+                + c_vap_liq_wp_i_mns * wp_i_mns
+                + c_vap_liq_wp_i_pls * wp_i_pls
+                + j_vap_liq_i_mns
+                + j_vap_liq_i_pls
+            )
+
+            PXCOF = 1.0 / 133322.0
+
+            if self.get_layer(i).num == 2:
+
+                # PXCOF: 絶対湿度を圧力にかえる係数
+                # PXCOF = 1. / 133322. 
+                # 133322: エクセルで絶対湿度と水蒸気圧
+
+                # (kg/s)/(J/kg) = kg/m3 * Pa/(J/kg) * (1/Pa) * m3/s
+                j_wtr_vent_wp = 1.2 * self.dgdu(i) * PXCOF * QQ
+                # (kg/s)/K = kg/m3 * Pa/K * (1/Pa) * m3/s
+                j_wtr_vent_k = 1.2 * self.dgdt(i) * PXCOF * QQ
+
+                if RN(i + 1) > 0.0:
+                    # 内側の水膜蒸発量 濡れ面率0.3
+                    # 3.43E-08: 湿気伝達率　kg/(m2 s Pa)
+                    D4 = 3.43E-08 * (self.p_sv(i+1) - XM(i)) * self.area * 0.3
+                else:
+                    D4 = 0.0
+
+                if RN(i - 1) > 0.0:
+                    # 外側の水膜蒸発量 濡れ面率0.3
+                    D5 = 3.43E-08 * (self.p_sv(i-1) - XM(i)) * self.area * 0.3
+                else:
+                    D5 = 0.0
+
+                UHEN += (
+                    j_wtr_vent_wp * oc.wp
+                    + j_wtr_vent_k * (oc.t_k - t_i)
+                    + D4 + D5
+                )
+
+                SAHEN += j_wtr_vent_wp
+
+            # WJRAIN 雨水由来の浸入量
+            # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量
+            D5 = WJRAIN(i) + WJW(i) * self.dx_is[i] * self.area
+
+            UHEN += D5
+
+            wp_next = UHEN / SAHEN
+
+            if self.get_layer(i).num == 2:
+                if wp_next >= 0.0:
+                    wp_next = -1.3E-4
+            else:
+                if wp_next >= 0.0:
+                    wp_next = -1.3E-3
+            
+            wp_n_pls[i] = wp_next
+
+        return wp_n_pls
 
 
 

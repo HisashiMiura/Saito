@@ -23,6 +23,37 @@ CPL = 4200.0
 ROW = 998.0
 
 
+def get_rho(t: float) -> float:
+    """絶対温度tにおける空気の密度を求める。
+
+    Args:
+        t: 絶対温度, K
+    Returns:
+        float: 空気の密度, kg / m3
+    
+    Notes:
+        PV = nRT より、密度ρは以下のように求められる。
+        P: 大気圧, Pa (約101325 Pa)
+        V: 体積, m3
+        n: モル数, mol
+        R: 気体定数, J/(mol K) (約8.314 J/(mol K))
+        T: 絶対温度, K
+        空気の密度は、
+        ρ = m / V
+        m: 質量, kg
+        空気の質量は、
+        m = n * M
+        M: 空気の平均分子量, kg/mol (約0.028966 kg/mol)
+        よって、
+        ρ = (n * M) / V
+          = PM / RT
+        P=101325 Pa, M=0.028966 kg/mol, R=8.314 J/(mol K) を代入すると、
+        ρ = (101325 * 0.028966) / (8.314 * t) ≈ 353.0 / t
+    """
+
+    return 353.0 / t
+
+
 def get_wp(rh: float, t: float) -> float:
     """水分化学ポテンシャルを求める。
 
