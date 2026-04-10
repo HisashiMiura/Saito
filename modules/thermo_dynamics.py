@@ -329,12 +329,11 @@ def DIFF(n_mat: int, rh:float, k: float):
     return rml
 
 
-def CALDPDU(wpt, tp, gma, ml0, row):
+def CALDPDU(wpt, tp, gma, ml0):
     """
     含水率変化に対するポテンシャル変化率 (DPDU) を計算する。(J/kg)/K
     gma:kg/m3
     TODO: 単位がよくわからない。
-    row: kg/m3
     """
     d1 = wpt
     
@@ -359,8 +358,8 @@ def CALDPDU(wpt, tp, gma, ml0, row):
     
     # VGTの計算 (0.01は%を小数に戻す係数と推測)
     # kg/m3 / 
-    vgt1 = 0.01 * wd1 * gma / row
-    vgt2 = 0.01 * wd2 * gma / row
+    vgt1 = 0.01 * wd1 * gma / ROW
+    vgt2 = 0.01 * wd2 * gma / ROW
     
     # 中央差分による勾配(微分値)の近似
     # 0.5 * (VGT1 - VGT2) / DW

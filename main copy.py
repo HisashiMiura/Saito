@@ -2,7 +2,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from modules.room import Room, InputRoom
-from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, DIFF, AHGANS, CALDPDU, CPL, ROW, get_rho
+from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, DIFF, AHGANS, CPL, ROW, get_rho
 from modules.config import TMPOC, HTC_TW, HOI
 from modules.wall import Wall, WallType, Layer
 from modules.solar_position import get_solar_position
@@ -27,58 +27,32 @@ INTEGER DAY,DAY2,DAY1
 !//////////COEFFOCIENT//////////////
 DIMENSION NX(NWP)
 DIMENSION WGT(NWP,NXP)
-DIMENSION TEMP_CAVITY(KMTLP)
 DIMENSION KMTL(KMTLP),WOUTAV(50)
 
 !/////////VARIABLE///////////////
 DIMENSION WPU(NWP,NXP),WPS(NWP,NXP),WPW(NWP,NXP),TMP(NWP,NXP)
 DIMENSION XN(NWP,NXP)
-DIMENSION AWPU(NWP,NXP),ATMP(NWP,NXP),BWPU(NWP,NXP),BTMP(NWP,NXP)
-DIMENSION HWPU(NWP,NXP),HTMP(NWP,NXP)    !,HWPS(NXP),HWPW(NXP)
-! DIMENSION STMP(KMTLP,2),SWPS(KMTLP,2),SWPU(KMTLP,2),SWPW(KMTLP,2)&
-DIMENSION QS(NWP,KMTLP,2)
-DIMENSION SCWDAY(NWP,25),MCW(NWP),SCW(NWP),CWV(NWP)
-DIMENSION SATDV(NWP),QQ(NWP,NXP),XM(NWP,NXP),AXN(NWP,NXP),RHDIS(NWP,NXP,12,31)
+DIMENSION ATMP(NWP,NXP),BWPU(NWP,NXP),BTMP(NWP,NXP)
+DIMENSION MCW(NWP)
+DIMENSION QQ(NWP,NXP),XM(NWP,NXP),RHDIS(NWP,NXP,12,31)
 DIMENSION RHAVD(NWP,NXP),WGTAVD(NWP,NXP)
 DIMENSION ATMPQ(NWP,NXP)
-!DIMENSION TDES1(24),TDES2(24),THDES1(24),THDES2(24),TSDES1(24),TSDES2(24),THSDES1(24),THSDES2(24)
-DIMENSION TPAVD(NWP,NXP),XNAVD(NWP,NXP),TPDIS(NWP,NXP,12,31),XNDIS(NWP,NXP,12,31)
-DIMENSION WLOSS(NWP,NXP),WJW(NWP,NXP)  !DAMAGE FUNC
+DIMENSION TPAVD(NWP,NXP),XNAVD(NWP,NXP),TPDIS(NWP,NXP,12,31)
+DIMENSION WLOSS(NWP,NXP),WJW(NWP,NXP)
 DIMENSION WJRAIN(NWP,NXP),RAIN(24)
 DIMENSION RN(NWP,NXP),HRN(NWP,NXP)
-DIMENSION MDAY(12)
-DIMENSION WSIND(NWP,25)
-
 
 DATA OMG/1.2/
-DATA MDAY/31,28,31,30,31,30,31,31,30,31,30,31/
 
-!**** FILE OPEN ****
+CHARACTER MOJI*110, FILENAME0*12
 
-  PRINT *,  '　　気象データファイルを入力して下さい'
-  OPEN(UNIT=7,FILE="")
-
-!PRINT *,  '　　物性データファイルを入力して下さい'
-OPEN(UNIT=11,FILE="mcoff1.prn")
-
-  PRINT *,  '　　風雨データファイルを入力して下さい'
-OPEN(UNIT=13,FILE="")
-
-CHARACTER MOJI*110,OUTFILE*8,FILENAME0*12
-READ(13,210)MOJI
-READ(13,210)MOJI
-PRINT *,  '　出力ファイルを入力して下さい（8バイト以内）'
-READ(5,*)OUTFILE
 PRINT *,  '　収束計算あり=1   収束計算なし=0 '
 READ(5,*)NREPT
 PRINT *,  '腐朽緩和係数を入力して下さい '
 READ(5,*)ROTOMG
 PRINT *,  '水分生成の扱い　無視0　考慮1 '
 READ(5,*)I_HCOFF
-PRINT *,  '通気層流量出力ポイント　厚壁No及び層番号1,層番号2 '
-READ(5,*)NQOUT1
-READ(5,*)NQOUT2
-READ(5,*)NQOUT3
+
 
 # 水分化学ポテンシャルによる建物の温湿度計算
 
@@ -109,9 +83,6 @@ nrains = set_default_nrains()
 
 walls = Wall.read_default()
 
-
-# 薄壁部位数
-NWIN = 4
 
 # :::::::::結露計算部位入力:::::::
 
@@ -178,9 +149,7 @@ for L, wall in enumerate(walls):
     IW = wall.kwtype
 
     for K, layer in enumerate(wall.layers):
-        L1 = wall.first_mesh_indices[k]
-        L2 = wall.last_mesh_indices[k]
-        L5 = layer.num
+
         TP1 = layer.initial_temp + ATP
         RH0 = layer.initial_humidity
         WP0 = SATUWPT(TP1)
@@ -192,27 +161,21 @@ for L, wall in enumerate(walls):
         WP2=WP0 + WP1
         QQ(L,K)=0.
 
-        for I in range(L1,L2):
-            WPW(L,I) = WP2
-            WPU(L,I) = WP1
-            WPS(L,I) = WP0
-            # TMP(L,I) = TP1
-            ATMPQ(L,I) = TP1 - ATP
-            XN(L,I) = VP * RH0 * 0.01
-            XM(L,I) = VP * RH0 * 0.01
-            AXN(L,I) = VP * RH0 * 0.01
-            AWPU(L,I) = WP1
-            ATMP(L,I) = TP1
-            RHAVD(L,I) = 0.
-            WGTAVD(L,I) = 0.
-            XNAVD(L,I) = 0.
-            TPAVD(L,I) = 0.
-            WD = AHGANS(rhm=RH0, ml0=L5)
-            WGT(L,I) = WD
-            WLOSS(L,I) = 0.
-
-        for I in range(1, 2):
-            QS(L,K,I) = 0.
+        WPW(L,I) = WP2
+        WPU(L,I) = WP1
+        WPS(L,I) = WP0
+        # TMP(L,I) = TP1
+        ATMPQ(L,I) = TP1 - ATP
+        XN(L,I) = VP * RH0 * 0.01
+        XM(L,I) = VP * RH0 * 0.01
+        ATMP(L,I) = TP1
+        RHAVD(L,I) = 0.
+        WGTAVD(L,I) = 0.
+        XNAVD(L,I) = 0.
+        TPAVD(L,I) = 0.
+        WD = AHGANS(rhm=RH0, ml0=L5)
+        WGT(L,I) = WD
+        WLOSS(L,I) = 0.
 
 for L in range(NOUTAV):
     I = NOUTAVD(L,1)
@@ -282,7 +245,6 @@ for NYEAR in range(1, period.LYEAR + 1):
                             L2=NALX(IW,K)
                             L5=walltypes[IW][K].num
                             DO I=L1,L2
-                                HWPU(LW,I) = WPU(LW,I)
 
                                 wall.t_n_is = wall.t_n_pls
                                 # 1ステップ前の値を入れ替えている。
@@ -352,22 +314,17 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                             for i in range(wall.n_mesh_total):
 
-                            for K in range(wall.layers):
-                                L1 = NAFX(IW,K)
-                                L2=NALX(IW,K)
-                                L5=walltypes[IW][K].num
-                                if wall.materials_is[i] == 2 and wall[K].alpha > 0.0:
+                                if wall.is_air_layer_is[i] and wall[K].alpha > 0.0:
                                     
                                     # TMP 絶対温度
-                                    D1 = abs(TMP(LW,L1)-ATP-ATMPQ(LW,L1))
+                                    D1 = abs(TMP(LW, i)-ATP-ATMPQ(LW, i))
                                     if D1 > D2:
                                         D2 = D1
 
-                                ATMPQ(LW,L1)=TMP(LW,L1)-ATP
-                            END DO
-                        END DO
+                                ATMPQ(LW, i)=TMP(LW, i)-ATP
+
                         IF(D2.LT.EPS1)GO TO 218
-                    END IF
+
 
                     # *************換気量の算出(Q=m3/s)****************
                     rho_o = get_rho(t=oc.t_k)
@@ -377,7 +334,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                     for wall in walls:
                         qq = 0.0
                         for i in range(wall.n_mesh_total):
-                            if wall.materials_is[i] == 2:
+                            if wall.is_air_layer_is[i]:
                                 rho_i = get_rho(t=wall.t_n_is[i])
                                 qq += wall.alpha_a_ls * (2 / rho_o * abs(rho_o - rho_i) * 9.8 * wall.height) ** 0.5
                         QQ.append(qq)
@@ -416,12 +373,16 @@ for NYEAR in range(1, period.LYEAR + 1):
                     # ************水膜の水分保持量及び吸水量の計算**********
                     IF(NRAINS.GT.0)THEN
                         DO K=1,NRAINS
+                            # 壁の番号
                             I=NRAINPOINT(K,1)
+                            # 質点の番号
                             J=NRAINPOINT(K,2)
                             IW=walls[I].kwtype
                             L1=walltypes[IW][NRAINPOINT(k,3)].num
+                            # 材料番号
                             L5=walltypes[IW][L1].num
 
+                            # NALX:室内側の接点番号
                             IF(J.EQ.NALX(IW,NRAINPOINT(K,3)))THEN     !  水膜との隣接質点の選択
                                 D2=WPU(I,J-1)
                                 D3=XM(I,J+1)
@@ -443,7 +404,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 DGDT = get_dgdt(rh=RH1, t=t_srf)
 
                                 # 湿気伝達率 kg/(m2 s Pa))
-                                D4=3.43E-08*(D3-VP)*0.3                                       !****濡れ面率0.3  水膜からの蒸発量
+                                D4=3.43E-08*(D3-VP)*0.3 # ****濡れ面率0.3  水膜からの蒸発量
 
                                 IF(L5.GE.10.AND.L5.LE.12)THEN                                 !バックシーラー透水抵抗 2.4e+5 m2sPa/kg by　長村
                                     # 3.73：水分伝導率（材料番号が10～12）（セメント系材料：サイディングとか）　kg/ms(J/kg)
@@ -561,6 +522,7 @@ for NYEAR in range(1, period.LYEAR + 1):
     
                     # ///////JUDGEMENT CONVERGENCE OF HEAT AND MOISTURE/////
 
+                    # 収束計算ありの場合　NREPT=1, 収束計算なしの場合　NREPT=0
                     IF(NREPT.EQ.1)THEN  !////COMBINE
 
                         DO LW=1,len(walls)
@@ -652,7 +614,6 @@ for NYEAR in range(1, period.LYEAR + 1):
                     L5=walltypes[IW][K].num
                     DO I=L1,L2
                         RHDIS(LW,I,MON,DAY)=RHAVD(LW,I)/24./NDVD
-                        XNDIS(LW,I,MON,DAY)=XNAVD(LW,I)/24./NDVD
                         TPDIS(LW,I,MON,DAY)= TPAVD(LW,I)/24./NDVD
                         RHAVD(LW,I)=0.
                         WGTAVD(LW,I)=0.
@@ -690,7 +651,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                             DLOSS = wdm.WOOD_ROT(LW, I, c_liquid_i_pls, D2, ROTOMG)
                             WLOSS(LW,I)=WLOSS(LW,I)+DLOSS
                             IF(WLOSS(LW,I) > WLOSSMAX)DLOSS=0.
-                            WJW(LW,I)=HCOFF*DLOSS * wall.GMA(I) /86400.   ! Time unit:h=24,s=86400
+                            WJW(LW,I)=HCOFF*DLOSS * wall.gma_is[i] /86400.   ! Time unit:h=24,s=86400
                         END DO 
                     END IF 
 
@@ -758,63 +719,6 @@ def CWIF1(t: float, x_air: float, mcw: int):
         mcw = 1
 
     return mcw, x_srf
-
-
-!********YOMITOBASI******************				
-SUBROUTINE YOMI(MON1,MDAY1,KDAY)
-CHARACTER MOJI*50				
-DIMENSION MDAY(12)				
-DATA MDAY/31,28,31,30,31,30,31,31,30,31,30,31/				
-L1=0				
-KDAY=0				
-DO 60 I = 1,MON1-1				
-    L1=MDAY(I)+L1				
-60 CONTINUE      				
-L2=MDAY1+L1-1				
-KDAY=L2				
-L3=L2*25				
-PRINT *,' YOMITOBASI=',L3				
-DO 70 I = 1,L3+1				
-    READ(7,*)MOJI
-70 CONTINUE
-
-L4=L2*24
-
-DO I=1,L4
-    READ(13,*)D1,D2
-END DO
-
-PRINT *, '  MOJI ',MOJI,D1,D2				
-RETURN				
-END				
-!********************************				
-
-
-def ROOM(kday, trav, trdt, rrav):
-    """
-    室内の温湿度計算
-    kday: 通算日(または経過時間)
-    trav: 平均気温
-    trdt: 気温の振幅
-    rrav: 平均相対湿度
-    """
-    # D1 = 2 * PI * (KDAY - 212) * 24 / 8760
-    # 212日はおそらく8月1日付近を基準（位相）にしている
-    d1 = 2 * math.pi * (kday - 212) * 24.0 / 8760.0
-    
-    # 室温の計算 (余弦曲線での近似)
-    tr = trdt * math.cos(d1) + trav
-    rr = rrav
-    
-    t0 = tr + 273.15  # 摂氏 -> ケルビン
-    
-    # GOFF関数から飽和水蒸気圧等を取得
-    fs0, vp = GOFF(t0)
-    
-    # 水蒸気圧の計算 (VP * 相対湿度[%] * 0.01)
-    xr = vp * rr * 0.01
-    
-    return tr, rr, xr
 
 
 class WoodDecayModel:
