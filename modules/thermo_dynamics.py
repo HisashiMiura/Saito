@@ -1,4 +1,5 @@
 import math
+from modules.materials import Material
 
 
 # 絶対温度, K
@@ -188,125 +189,26 @@ def WPTRE(wp: float, t: float) -> float:
     return min(rh, 100.0) 
 
 
-def AHGANS(rhm, ml0):
-    """含水率計算関数 (AHGANS)
-    
-    Args:
-        rhm : 相対湿度 (%)
-        ml0 : 材料種別コード
-
-    Returns:
-        含水率
-    """
-
-    d1 = rhm * 0.01
-
-    # ML0の値に応じて処理を分岐
-    # FortranのGO TO (11,10,13,14,15,16,17,18,19,20,21,22,13,13,13,13,13,28,29),ML0 に対応
-    if ml0 == 1:
-        # ラベル 11: SEASING BOARD
-        if rhm <= 89:
-            wd = -math.log(1 - 0.01 * rhm) / 0.1612944
-        elif 89 < rhm < 95:
-            wd = 639.22 - 14.988 * rhm + 0.08943 * rhm * rhm
-        else: # rhm >= 95
-            wd = 2.446 * rhm - 209.9
-
-    elif ml0 in [3, 13, 14, 15, 16, 17]:
-        # ラベル 13: GLASS WOOL
-        # ※元のコードでML0が3, 13-17の際にラベル13へ飛ぶ設定
-        d2 = math.exp(-1.3016 * (1 - d1**101.667))
-        d3 = 0.16 * d2 * d1**7.6448
-        if d1 > 0.98:
-            d3 = 47.79595 * d1 - 46.79595
-        wd = d3 * 100.0
-
-    elif ml0 == 4:
-        # ラベル 14: WOOD
-        d2 = math.exp(-2.1708 * (1 - d1**90.988))
-        d3 = 1.58 * d2 * d1**1.3664
-        wd = d3 * 100.0
-
-    elif ml0 == 5:
-        # ラベル 15: PLY WOOD
-        d2 = math.exp(-1.6471 * (1 - d1**32.051))    #ASHRAE PLYWOOD 1
-        d3 = 1.0625 * d2 * d1**1.5373
-        wd = d3 * 100.0
-
-    elif ml0 == 6:
-        # ラベル 16: PLASTER BOARD
-        d2 = math.exp(-1.6445 * (1 - d1**75.811))    #ASHRAE GYPSUM
-        d3 = 0.56978 * d2 * d1**0.18552
-        wd = d3 * 100.0
-
-    elif ml0 == 7:
-        # ラベル 17: ALC
-        d2 = math.exp(-0.66866 * (1 - d1**17.316))
-        d3 = 0.071101 * d2 * d1**1.0146
-        wd = d3 * 100.0
-
-    elif ml0 == 8:
-        # ラベル 18: NANSHITSUSENIBAN
-        d2 = math.exp(-0.93059 * (1 - d1**4.6145))
-        d3 = 0.35093 * d2 * d1**0.48739
-        wd = d3 * 100.0
-
-    elif ml0 == 9:
-        # ラベル 19: THERMOPLY
-        d2 = math.exp(-1.2566 * (1 - d1**5.483))
-        d3 = 0.4367 * d2 * d1**0.3513
-        wd = d3 * 100.0
-
-    elif ml0 == 10:
-        # ラベル 20: SAIDHING
-        d2 = math.exp(-1.1225 * (1 - d1**15.878)) #ASHRAE Siding No.38
-        d3 = 0.635 * d2 * d1**2.5972
-        wd = d3 * 100.0
-
-    elif ml0 == 11:
-        # ラベル 21: tutikabe
-        d2 = math.exp(-0.69 * (1 - d1**25.06))
-        d3 = 0.0645 * d2 * d1**0.658
-        wd = d3 * 100.0
-
-    elif ml0 == 12:
-        # ラベル 22: 軽量モルタル
-        d2 = math.exp(-1.75 * (1 - d1**2.015))
-        d3 = 0.203 * d2 * d1**(-0.120)
-        wd = d3 * 100.0
-
-    elif ml0 == 18:
-        # ラベル 28: 集成材（OMソーラー）
-        d2 = math.exp(-0.849 * (1 - d1**9.527))
-        d3 = 0.381 * d2 * d1**(0.738)
-        wd = d3 * 100.0
-
-    elif ml0 == 19:
-        # ラベル 29: 構造用合板（OMソーラー）
-        d2 = math.exp(-0.907 * (1 - d1**9.412))
-        d3 = 0.382 * d2 * d1**(0.670)
-        wd = d3 * 100.0
-
-    # ラベル 10: CONTINUE (処理の終了)
-    return wd
-
-
-def DIFF(n_mat: int, rh:float, k: float):
-    """液体伝導率(RML)の計算
+def DIFF(rh:float, k: float, material: Material):
+    """水分伝導率(RML)の計算
 
     Args:
-        n_mat: 材料番号
         rh: 相対湿度, %
         k: 絶対温度, K
+        material: 
     Returns:
     """
 
     # 含水率
-    wd = AHGANS(rhm=rh, ml0=n_mat)
+    wd = material.get_u(rh=rh) * 100
     
     if 45 < wd < 110:
         d1 = wd * 0.01
         # DW = e^(a + bX + cX^2)
+        # 拡散係数, m2/s
+        # 含水率差による移動係数
+        # 拡散係数は、水分伝導率 (kg/s) / m (kg/kg)　を　水の密度（kg/m3）でわったもの。 
+        # m3/s / m kg/kg
         dw = math.exp(-30.91 + 4.2967 * d1 - 0.22017 * (d1**2))
         
         rh1 = rh + 0.005
@@ -315,11 +217,18 @@ def DIFF(n_mat: int, rh:float, k: float):
         # 微分を差分で近似している計算
         wp1 = get_wp(rh1, k)
         wp2 = get_wp(rh2, k)
-        wd1 = AHGANS(rhm=rh1, ml0=n_mat)
-        wd2 = AHGANS(rhm=rh2, ml0=n_mat)
+        wd1 = material.get_u(rh=rh1)
+        wd2 = material.get_u(rh=rh2)
         
         # ゼロ除算のチェック
         if abs(wp1 - wp2) > 1e-12:
+            # 拡散係数は、m3/s / m kg/kg
+            # これを質量基準に直すために水の密度をかける。
+            # 含水率差基準(kg/kg)ではなくて水分化学ポテンシャル差基準(J/kg)になおす。
+            # 水の密度(kg/m3) * 拡散係数(m2/s) * 含水率(kg/kg) * 相対湿度差(0.01) / 水分化学ポテンシャル(J/kg)
+            # 移動量(kg/s) / (m (J/kg)) 
+            # Δwp/Δu = Δwp/Δrh / Δu/Δrh
+            # 0.01 は必要かどうか？（要チェック）
             rml = 998.0 * dw * abs((wd1 - wd2) * 0.01 / (wp1 - wp2))
         else:
             rml = 0.0
@@ -329,11 +238,15 @@ def DIFF(n_mat: int, rh:float, k: float):
     return rml
 
 
-def CALDPDU(wpt, tp, gma, ml0):
+def CALDPDU(wpt, tp, gma, ml0, material: Material):
     """
-    含水率変化に対するポテンシャル変化率 (DPDU) を計算する。(J/kg)/K
+    水分化学ポテンシャル変化に対する含水率変化 (DPDU) を計算する。
+    (m3/m3)/(J/kg) →　確定
     gma:kg/m3
     TODO: 単位がよくわからない。
+    dphi/dmu
+    分子：含水率, m3/m3
+    分母：水分化学ポテンシャル, J/kg
     """
     d1 = wpt
     
@@ -353,16 +266,20 @@ def CALDPDU(wpt, tp, gma, ml0):
     rh2 = WPTRE(w2, tp)
     
     # 外部定義されている前提の AHGANS, 含水率
-    wd1 = AHGANS(rhm=rh1, ml0=ml0)
-    wd2 = AHGANS(rhm=rh2, ml0=ml0)
+    wd1 = material.get_u(rh1) * 100
+    wd2 = material.get_u(rh2) * 100
     
     # VGTの計算 (0.01は%を小数に戻す係数と推測)
-    # kg/m3 / 
+    # 0.01 * wd: kg/kg
+    # gma: 材料密度　kg/m3
+    # ROW: 水の密度　kg/m3
+    # vgtは含水率（m3/m3）　wdはkg/kgだったのをm3/m3に直している。
     vgt1 = 0.01 * wd1 * gma / ROW
     vgt2 = 0.01 * wd2 * gma / ROW
     
     # 中央差分による勾配(微分値)の近似
     # 0.5 * (VGT1 - VGT2) / DW
+    # dw を2回たしているので2でわっている。
     if dw != 0:
         dpdu = 0.5 * (vgt1 - vgt2) / dw
     else:

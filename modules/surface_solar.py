@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def get_theta_sat_d_t(
+def get_surface_solar_d_t(
         sin_h_d_t: float,
         cos_h_d_t: float,
         sin_a_d_t: float,

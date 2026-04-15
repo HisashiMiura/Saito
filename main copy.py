@@ -2,7 +2,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from modules.room import Room, InputRoom
-from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, DIFF, AHGANS, CPL, ROW, get_rho
+from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, CPL, ROW, get_rho
 from modules.config import TMPOC, HTC_TW, HOI
 from modules.wall import Wall, WallType, Layer
 from modules.solar_position import get_solar_position
@@ -11,6 +11,7 @@ from modules.date_operation import Period
 from modules.nrain import NRAINPOINT, ACOFRAIN, set_default_nrains
 from scipy.stats import rayleigh
 from modules.date_operation import get_step_d_t, get_step_n
+from modules.input_data import InputRoom
 
 
 INTEGER,PARAMETER :: NXP=150,KMTLP=10,NWP=50,NRM=50
@@ -173,7 +174,7 @@ for L, wall in enumerate(walls):
         WGTAVD(L,I) = 0.
         XNAVD(L,I) = 0.
         TPAVD(L,I) = 0.
-        WD = AHGANS(rhm=RH0, ml0=L5)
+        WD = wall.material_is[i].get_psi(rh=RH0)
         WGT(L,I) = WD
         WLOSS(L,I) = 0.
 
@@ -383,10 +384,16 @@ for NYEAR in range(1, period.LYEAR + 1):
                             L5=walltypes[IW][L1].num
 
                             # NALX:室内側の接点番号
+                            # 材料の室内側の境界の質点の場合
+                            # サイディングの通気層側の接点を出している。
                             IF(J.EQ.NALX(IW,NRAINPOINT(K,3)))THEN     !  水膜との隣接質点の選択
+                                # D2：この場合は室外側
                                 D2=WPU(I,J-1)
+                                # XM：１ステップ前の水蒸気圧, Pa
                                 D3=XM(I,J+1)
+                            # 材料の中を指定することはもともと考えられていないので、ELSEでは室外側の質点を意味している。
                             ELSE
+                                # D2：この場合は室内側
                                 D2=WPU(I,J+1)
                                 IF(J.EQ.1)THEN
                                     D3=oc.xod                              !外装材表面、外気との収支
@@ -395,6 +402,10 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 END IF
                             END IF
 
+                            # D2:水分化学ポテンシャル
+                            # D3:水蒸気圧, Pa
+
+                            # RN:水幕の水分量, kg/m2
                             IF(walls[I].get_swjrain(oc=oc, i=J) >= 0.0 or RN(I,J).GE.0)THEN
                                 t_srf=TMP(I,J)
                                 FS, VP = GOFF(t_srf)
@@ -403,14 +414,18 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 DGDU = get_dgdu(rh=RH1, t=t_srf)
                                 DGDT = get_dgdt(rh=RH1, t=t_srf)
 
-                                # 湿気伝達率 kg/(m2 s Pa))
+                                # 3.43E-08：湿気伝達率 kg/(m2 s Pa))
+                                # (kg/s) / m2
                                 D4=3.43E-08*(D3-VP)*0.3 # ****濡れ面率0.3  水膜からの蒸発量
 
                                 IF(L5.GE.10.AND.L5.LE.12)THEN                                 !バックシーラー透水抵抗 2.4e+5 m2sPa/kg by　長村
                                     # 3.73：水分伝導率（材料番号が10～12）（セメント系材料：サイディングとか）　kg/ms(J/kg)
                                     # 2.4：バックシーラー　塗膜が塗ってある　塗膜の抵抗　m2sPa/kg
                                     # 抵抗値にして逆数にしてコンダクタンスになおしている。
-                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /3.73E-6+2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
+                                    # kg/(s m2) / (J/kg)
+                                    # バックシーラーのコンダクタンス, kg/(s m2) / Pa
+                                    # DGDU: Pa / (J/kg)
+                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /3.73E-6 + 2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
                                 ELSE
                                     # 木製品を想定　木製品の水分伝導率は、3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
                                     # 瓦の5%になっている。（根拠はいまのところ不明）
@@ -421,16 +436,24 @@ for NYEAR in range(1, period.LYEAR + 1):
                                 # D2 はポテンシャル
                                 # D4 は蒸発量
                                 # HRN は前のステップの水分量
-                                RN(I,J)=(c_liquid_i_pls*D2+D4+walls[I].get_swjrain(oc=oc, i=J))*3600/NDVD + HRN(I,J)            !******水膜の水分量kg/m2
+                                
+                                # kg/(s m2) / (J/kg) * D3(J/kg) * dt(s) = kg/m2
+                                RN(I,J) = (
+                                    c_liquid_i_pls * D2
+                                    + D4
+                                    + walls[I].get_swjrain(oc=oc, i=J)
+                                ) * 3600 / NDVD + HRN(I,J)            !******水膜の水分量kg/m2
+                                
                                 # 水幕からの吸水量（表面に水幕があって材料に吸われる分）
                                 # 水幕が残っている場合は飽和水蒸気圧（水分伝導率で計算）
 
-                                WJRAIN(I,J)=-c_liquid_i_pls*D2*walls[LW].area
+                                WJRAIN(I,J) = c_liquid_i_pls * (0 - D2) * walls[LW].area
 
                                 IF(RN(I,J).LE.0)THEN
                                     RN(I,J)=0
+                    
                                     # RNがゼロの場合は水幕がないので、雨水が直接材料に吸われることになる。
-                                    WJRAIN(I,J) = walls[I].get_swjrain(oc=oc, i=J) *walls[LW].area+HRN(I,J)*walls[LW].area                      !******浸水量WJRAIN kg/s
+                                    WJRAIN(I,J) = walls[I].get_swjrain(oc=oc, i=J) * walls[LW].area + HRN(I,J) * walls[LW].area                      !******浸水量WJRAIN kg/s
                                 END IF
                             END IF
                         END DO
@@ -492,7 +515,7 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                                 XN(LW,I)=RH0*VP*0.01
 
-                                WD = AHGANS(rhm=RH0, ml0=L5)
+                                WD = wall.material_is[i].get_u(rh=RH0)
                                 WGT(LW,I)=WD
                                 wall.set_TMPC(I, TMPC=TMP(LW, I) - ATP)
                             END DO
