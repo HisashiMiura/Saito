@@ -546,6 +546,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                     # ///////JUDGEMENT CONVERGENCE OF HEAT AND MOISTURE/////
 
                     # 収束計算ありの場合　NREPT=1, 収束計算なしの場合　NREPT=0
+                    # NREPT=1のときは温度と水分の収束計算をする。
                     IF(NREPT.EQ.1)THEN  !////COMBINE
 
                         DO LW=1,len(walls)
@@ -661,9 +662,9 @@ for NYEAR in range(1, period.LYEAR + 1):
                     WLOSSMAX=0.6
 
                     IF(L5.EQ.4.OR.L5.EQ.5)THEN
-
-                        IF(I_HCOFF.EQ.1)THEN
-                            HCOFF=0.319  			  !水分生成量
+                        # I_HCOFF：水分生成を計算するかどうかの判定パラメータ
+                        if I_HCOFF == 1:
+                            HCOFF=0.319 # 水分生成量（実験値）
                         ELSE
                             HCOFF=0.
                         END IF
@@ -671,10 +672,18 @@ for NYEAR in range(1, period.LYEAR + 1):
                         DO I=L1,L2
                             c_liquid_i_pls=TPDIS(LW,I,MON,DAY)
                             D2=RHDIS(LW,I,MON,DAY)
+                            # 引数（壁のインデックス、質点番号、温度、相対湿度、普及速度の緩和係数（0～1））
                             DLOSS = wdm.WOOD_ROT(LW, I, c_liquid_i_pls, D2, ROTOMG)
                             WLOSS(LW,I)=WLOSS(LW,I)+DLOSS
                             IF(WLOSS(LW,I) > WLOSSMAX)DLOSS=0.
-                            WJW(LW,I)=HCOFF*DLOSS * wall.gma_is[i] /86400.   ! Time unit:h=24,s=86400
+                            # DLOSS: 木材が不朽して質量が減少した分, kg / (kg d)  質量減少率（健全材のうち分解された量の比（重量ベース））
+                            # HCOFF: 不朽した分は菌の代謝に使われ、残りは水分になる。質量現象に対する水分量, 無次元
+                            # gma: 密度, kg/m3
+                            # 86400: s/d
+                            # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量, kg/(m3 s)
+                            # kg（水）/(m3（木材） s) = HCOFF（m3（水）/m3（材料））/(kg（材料）/kg（材料）) * DLOSS(kg（木材）/kg（木材）/d) * gma（kg（木材）/m3（木材））
+                            # TODO: wall.gma_is は水の密度が正しい                            
+                            WJW(LW,I) = HCOFF * DLOSS * wall.gma_is[i] / 86400
                         END DO 
                     END IF 
 
@@ -754,6 +763,8 @@ class WoodDecayModel:
 
     def __init__(self, nwp=50, nxp=150):
         # AIコメント：状態を保持するための配列 (FortranのDIMENSION相当)
+        # tims_s：ある閾値を超えた積算時間
+        # l_stage：質量現象が始まるか否か？
         self.time_s = np.zeros((nwp + 2, nxp + 2))   # インデックス余裕を持たせる
         self.l_stage = np.zeros((nwp + 2, nxp + 2), dtype=int)
 
@@ -763,8 +774,16 @@ class WoodDecayModel:
         k, i: 現在のグリッド等のインデックス
         tmp: 温度
         rh: 相対湿度
-        rotomg: 腐朽速度係数
+        rotomg: 腐朽速度係数        
         """
+        # 引数（壁のインデックス、質点番号、温度、相対湿度、普及速度の緩和係数（0～1））
+        # 齋藤先生の熱シンポを読むこと
+
+        # ある温度と湿度を超えた。
+        # ある温度と湿度を超えた状態を脱したとしても積算時間は残る。
+        # 超えた時間を積算し、それがあるレベルを超えると質量現象がはじまる。
+    
+
         w = -1.0  # OSB (TIN関数に渡すパラメータと推測)
         rh_growth = 98.0
         dloss = 0.0
@@ -776,10 +795,12 @@ class WoodDecayModel:
             self.time_s[k, i] = 0.0
         else:
             # 以前定義した RH_CRITICAL を呼び出し
+            # 温度ごとに定義された閾値
             rhc = RH_CRITICAL(tmp)
-            
+
             if rh < rhc:
                 self.time_s[k, i] = 0.0
+            # 閾値をこえた
             else:
                 # TIN関数の呼び出し (引数wが必要)
                 gc, fc = TIN(tmp, rh, w)
@@ -791,6 +812,8 @@ class WoodDecayModel:
                     d1 = 100.0 # 仮の大きな値
                 
                 # 発芽時間の計算 (TIME_INT)
+                # d1 がある値より大きくなると、、、、
+                # 発芽が始まるまでの時間（相対湿度がある閾値を超えかつある温度を超えた瞬間からの時間）
                 if d1 > 0:
                     time_int = d1
                 elif d1 > -0.59:
@@ -813,13 +836,19 @@ class WoodDecayModel:
         if 0 < tmp <= 40:
             # 自身または隣接するノードが発芽しているかチェック
             # (k-1, k+1 の範囲エラーを防ぐため境界チェックが必要)
+            # l_stage: 不朽が始まると1のフラグがたつ
+            # 隣接するセルもフラグがたたないと不朽ははじまらない。
+            # k: 質点
             if (self.l_stage[k, i] == 1 or 
                 self.l_stage[k-1, i] == 1 or 
                 self.l_stage[k+1, i] == 1):
                 
+                # rh_growth は 98 %
                 if rh >= rh_growth:
                     # 腐朽反応速度の計算
                     reaction_k = (2.77 - 3.23 * tmp + 0.865 * (tmp**2) - 0.0189 * (tmp**3)) * 1e-10 * rotomg
+                    # reaction_K: 質量減少率, (kg/kg)/s 反応速度係数
+                    # dt_damage: 1日計算 s/d
                     dloss = reaction_k * self.dt_damage
 
         return dloss
@@ -845,6 +874,7 @@ def RH_CRITICAL(tmp):
 def TIN(t, rh, w):
     """
     AIのコメント：温度(t), 相対湿度(rh), 含水率(?)w に基づき、FCとGCを計算する。
+
     """
     
     fc = (0.1384 * t + 0.4370 * rh - 42.9450 + w * (0.034 * t - 0.021 * rh + 1.721))

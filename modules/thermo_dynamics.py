@@ -196,10 +196,10 @@ def DIFF(rh:float, k: float, material: Material):
         rh: 相対湿度, %
         k: 絶対温度, K
         material: 
-    Returns:
+    Returns: 水分伝導率, (kg/ms) / (J/kg)
     """
 
-    # 含水率
+    # 含水率, %
     wd = material.get_u(rh=rh) * 100
     
     if 45 < wd < 110:
@@ -217,8 +217,8 @@ def DIFF(rh:float, k: float, material: Material):
         # 微分を差分で近似している計算
         wp1 = get_wp(rh1, k)
         wp2 = get_wp(rh2, k)
-        wd1 = material.get_u(rh=rh1)
-        wd2 = material.get_u(rh=rh2)
+        wd1 = material.get_u(rh=rh1) * 100
+        wd2 = material.get_u(rh=rh2) * 100
         
         # ゼロ除算のチェック
         if abs(wp1 - wp2) > 1e-12:
@@ -229,6 +229,11 @@ def DIFF(rh:float, k: float, material: Material):
             # 移動量(kg/s) / (m (J/kg)) 
             # Δwp/Δu = Δwp/Δrh / Δu/Δrh
             # 0.01 は必要かどうか？（要チェック）
+            # 998.0: 水の密度, kg/m3
+            # dw: 拡散係数, (m3/s) / (m kg/kg) = m2/s
+            # wd * 0.01: kg/kg
+            # wp: J/kg
+            # (kg/ms) / (J/kg)
             rml = 998.0 * dw * abs((wd1 - wd2) * 0.01 / (wp1 - wp2))
         else:
             rml = 0.0
@@ -241,13 +246,11 @@ def DIFF(rh:float, k: float, material: Material):
 def CALDPDU(wpt, tp, gma, ml0, material: Material):
     """
     水分化学ポテンシャル変化に対する含水率変化 (DPDU) を計算する。
-    (m3/m3)/(J/kg) →　確定
-    gma:kg/m3
-    TODO: 単位がよくわからない。
-    dphi/dmu
+    (m3/m3)/(J/kg)
     分子：含水率, m3/m3
     分母：水分化学ポテンシャル, J/kg
     """
+
     d1 = wpt
     
     # 元のFortranのロジック: 正の値の場合は -100.0 に強制

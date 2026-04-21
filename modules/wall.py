@@ -528,14 +528,15 @@ class Wall:
 
             if self.is_air_layer_is[i]:
 
-                # PXCOF: 絶対湿度を圧力にかえる係数
-                # PXCOF = 1. / 133322. 
-                # 133322: エクセルで絶対湿度と水蒸気圧
+                # PXCOF: 絶対湿度を水蒸気圧にかえる係数
+                # PXCOF = 1. / 133322.  (kg/m3)/Pa
+                # 133322: エクセルで絶対湿度と水蒸気圧 
 
-                # (kg/s)/(J/kg) = kg/m3 * Pa/(J/kg) * (1/Pa) * m3/s
-                j_wtr_vent_wp = 1.2 * self.dgdu(i) * PXCOF * QQ
+                # (kg/s)/(J/kg) = ??? * Pa/(J/kg) * ((kg/m3)/Pa) * m3/s
+                # もとのプログラムから1.2を消した
+                j_wtr_vent_wp = self.dgdu(i) * PXCOF * QQ
                 # (kg/s)/K = kg/m3 * Pa/K * (1/Pa) * m3/s
-                j_wtr_vent_k = 1.2 * self.dgdt(i) * PXCOF * QQ
+                j_wtr_vent_k = self.dgdt(i) * PXCOF * QQ
 
                 # RN: 水膜の保持水分量, kg/m2
                 if RN(i + 1) > 0.0:
@@ -551,6 +552,7 @@ class Wall:
                 else:
                     D5 = 0.0
 
+                # 風上側は外気にした。（もともとは上流側の通気層の状態量が入ることになっていた。）
                 UHEN += (
                     j_wtr_vent_wp * oc.wp
                     + j_wtr_vent_k * (oc.t_k - t_i)
@@ -560,13 +562,16 @@ class Wall:
                 SAHEN += j_wtr_vent_wp
 
             # WJRAIN 雨水由来の浸入量
-            # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量
-            D5 = WJRAIN(i) + WJW(i) * self.dx_is[i] * self.area
+            D7 = WJRAIN(i)
 
-            UHEN += D5
+            # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量, kg/(m3 s)
+            D5 = WJW(i) * self.dx_is[i] * self.area
+
+            UHEN += D5 + D7
 
             wp_next = UHEN / SAHEN
 
+            # ゼロを超えない措置。
             if self.is_air_layer_is[i]:
                 if wp_next >= 0.0:
                     wp_next = -1.3E-4
