@@ -2,7 +2,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from modules.room import Room, InputRoom
-from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, CPL, ROW, get_rho
+from modules.thermo_dynamics import ATP, get_wp, RG, GOFF, FUNCX, get_dgdu, ROW_CP, WPTRE, CPL, ROW, get_rho, get_x
 from modules.config import TMPOC, HTC_TW, HOI
 from modules.wall import Wall, WallType, Layer
 from modules.solar_position import get_solar_position
@@ -12,6 +12,8 @@ from modules.nrain import NRAINPOINT, ACOFRAIN, set_default_nrains
 from scipy.stats import rayleigh
 from modules.date_operation import get_step_d_t, get_step_n
 from modules.input_data import InputRoom
+from modules.wood_decay import rh_threshold, tin
+from modules import wood_decay
 
 
 INTEGER,PARAMETER :: NXP=150,KMTLP=10,NWP=50,NRM=50
@@ -32,7 +34,7 @@ DIMENSION KMTL(KMTLP),WOUTAV(50)
 
 !/////////VARIABLE///////////////
 DIMENSION WPU(NWP,NXP),WPS(NWP,NXP),WPW(NWP,NXP),TMP(NWP,NXP)
-DIMENSION XN(NWP,NXP)
+
 DIMENSION ATMP(NWP,NXP),BWPU(NWP,NXP),BTMP(NWP,NXP)
 DIMENSION MCW(NWP)
 DIMENSION QQ(NWP,NXP),XM(NWP,NXP),RHDIS(NWP,NXP,12,31)
@@ -232,28 +234,24 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     frac = n / NDVD
 
+                    # 外界気象条件
                     oc = weather.get_condition(month=MON, day=DAY, hour=IM, frac=frac)
 
 
                     # ////////PUT IN PREBIOUS VALUE///////////
 
-                    for n_LW, wall in enumerate(walls):
-                        LW = n_LW
-                        IW=walls[LW].kwtype
+                    for LW, wall in enumerate(walls):
 
-                        DO K=1,KMTL(IW)
-                            L1=NAFX(IW,K)
-                            L2=NALX(IW,K)
-                            L5=walltypes[IW][K].num
-                            DO I=L1,L2
+                        for i in range(wall.nrains):
 
                                 wall.t_n_is = wall.t_n_pls
+
                                 # 1ステップ前の値を入れ替えている。
-                                XM(LW,I)=XN(LW,I)
-                                HRN(LW,I)=RN(LW,I)
-                            END DO
-                        END DO
-                    END DO
+                                XM(LW,i) = XN(LW,i)
+
+                    for w, wall in enumerate(walls):
+                        
+                        wall.rn = rn_ws_is[w]
 
                     !///////////////COMBAIN METHIOD//////////////////////////
                     IT3=0
@@ -372,94 +370,16 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     # *************************************
                     # ************水膜の水分保持量及び吸水量の計算**********
-                    IF(NRAINS.GT.0)THEN
-                        DO K=1,NRAINS
-                            # 壁の番号
-                            I=NRAINPOINT(K,1)
-                            # 質点の番号
-                            J=NRAINPOINT(K,2)
-                            IW=walls[I].kwtype
-                            L1=walltypes[IW][NRAINPOINT(k,3)].num
-                            # 材料番号
-                            L5=walltypes[IW][L1].num
+                    rn_ws_is = []
+                    wjrain_ws_is = []
 
-                            # NALX:室内側の接点番号
-                            # 材料の室内側の境界の質点の場合
-                            # サイディングの通気層側の接点を出している。
-                            IF(J.EQ.NALX(IW,NRAINPOINT(K,3)))THEN     !  水膜との隣接質点の選択
-                                # D2：この場合は室外側
-                                D2=WPU(I,J-1)
-                                # XM：１ステップ前の水蒸気圧, Pa
-                                D3=XM(I,J+1)
-                            # 材料の中を指定することはもともと考えられていないので、ELSEでは室外側の質点を意味している。
-                            ELSE
-                                # D2：この場合は室内側
-                                D2=WPU(I,J+1)
-                                IF(J.EQ.1)THEN
-                                    D3=oc.xod                              !外装材表面、外気との収支
-                                ELSE
-                                    D3=XM(I,J-1)
-                                END IF
-                            END IF
+                    for w, wall in enumerate(walls):
 
-                            # D2:水分化学ポテンシャル
-                            # D3:水蒸気圧, Pa
+                        rn_is, wjrsin_is = wall.get_rn_n_pls(wp_is=wp_is, oc=oc, p_v_rm=room.p_v_n(n), dt=dt)
 
-                            # RN:水幕の水分量, kg/m2
-                            IF(walls[I].get_swjrain(oc=oc, i=J) >= 0.0 or RN(I,J).GE.0)THEN
-                                t_srf=TMP(I,J)
-                                FS, VP = GOFF(t_srf)
-                                RH1 = walls[I].rh[J]
+                        rn_ws_is.append(rn_is)
+                        wjrain_ws_is.append(wjrsin_is)
 
-                                DGDU = get_dgdu(rh=RH1, t=t_srf)
-                                DGDT = get_dgdt(rh=RH1, t=t_srf)
-
-                                # 3.43E-08：湿気伝達率 kg/(m2 s Pa))
-                                # (kg/s) / m2
-                                D4=3.43E-08*(D3-VP)*0.3 # ****濡れ面率0.3  水膜からの蒸発量
-
-                                IF(L5.GE.10.AND.L5.LE.12)THEN                                 !バックシーラー透水抵抗 2.4e+5 m2sPa/kg by　長村
-                                    # 3.73：水分伝導率（材料番号が10～12）（セメント系材料：サイディングとか）　kg/ms(J/kg)
-                                    # 2.4：バックシーラー　塗膜が塗ってある　塗膜の抵抗　m2sPa/kg
-                                    # 抵抗値にして逆数にしてコンダクタンスになおしている。
-                                    # kg/(s m2) / (J/kg)
-                                    # バックシーラーのコンダクタンス, kg/(s m2) / Pa
-                                    # DGDU: Pa / (J/kg)
-                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /3.73E-6 + 2.4E+5/DGDU)                        !飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
-                                ELSE
-                                    # 木製品を想定　木製品の水分伝導率は、3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
-                                    # 瓦の5%になっている。（根拠はいまのところ不明）
-                                    c_liquid_i_pls=1/( walltypes[IW].layers[J].dx /(3.73E-6*0.05)+2.4E+5/DGDU)                 !木製品を想定
-                                END IF
-
-                                # 水幕の水分量（保持している水の量）, kg/m2
-                                # D2 はポテンシャル
-                                # D4 は蒸発量
-                                # HRN は前のステップの水分量
-                                
-                                # kg/(s m2) / (J/kg) * D3(J/kg) * dt(s) = kg/m2
-                                RN(I,J) = (
-                                    c_liquid_i_pls * D2
-                                    + D4
-                                    + walls[I].get_swjrain(oc=oc, i=J)
-                                ) * 3600 / NDVD + HRN(I,J)            !******水膜の水分量kg/m2
-                                
-                                # 水幕からの吸水量（表面に水幕があって材料に吸われる分）
-                                # 水幕が残っている場合は飽和水蒸気圧（水分伝導率で計算）
-
-                                WJRAIN(I,J) = c_liquid_i_pls * (0 - D2) * walls[LW].area
-
-                                IF(RN(I,J).LE.0)THEN
-                                    RN(I,J)=0
-                    
-                                    # RNがゼロの場合は水幕がないので、雨水が直接材料に吸われることになる。
-                                    WJRAIN(I,J) = walls[I].get_swjrain(oc=oc, i=J) * walls[LW].area + HRN(I,J) * walls[LW].area                      !******浸水量WJRAIN kg/s
-                                END IF
-                            END IF
-                        END DO
-                    END IF
-
-                    # ****************************************
 
                     theta_r_n = room.theta_n(n=n)
                     wp_r_n = room.wp_n(n=n)
@@ -481,7 +401,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                             QQ=QQ[w],
                             RN=RN[w],
                             XM=XM[w],
-                            WJRAIN=WJRAIN[w],
+                            WJRAIN=wjrain[w],
                             WJW=WJW[w]
                         )
 
@@ -672,8 +592,12 @@ for NYEAR in range(1, period.LYEAR + 1):
                         DO I=L1,L2
                             c_liquid_i_pls=TPDIS(LW,I,MON,DAY)
                             D2=RHDIS(LW,I,MON,DAY)
+                
                             # 引数（壁のインデックス、質点番号、温度、相対湿度、普及速度の緩和係数（0～1））
-                            DLOSS = wdm.WOOD_ROT(LW, I, c_liquid_i_pls, D2, ROTOMG)
+                            if ROTOMG == 0:
+                                DLOSS = 0.0
+                            else:
+                                DLOSS = wdm.WOOD_ROT(LW, I, c_liquid_i_pls, D2)
                             WLOSS(LW,I)=WLOSS(LW,I)+DLOSS
                             IF(WLOSS(LW,I) > WLOSSMAX)DLOSS=0.
                             # DLOSS: 木材が不朽して質量が減少した分, kg / (kg d)  質量減少率（健全材のうち分解された量の比（重量ベース））
@@ -768,13 +692,12 @@ class WoodDecayModel:
         self.time_s = np.zeros((nwp + 2, nxp + 2))   # インデックス余裕を持たせる
         self.l_stage = np.zeros((nwp + 2, nxp + 2), dtype=int)
 
-    def WOOD_ROT(self, k, i, tmp, rh, rotomg):
+    def WOOD_ROT(self, k, i, tmp, rh):
         """
         木材の腐朽被害関数
         k, i: 現在のグリッド等のインデックス
         tmp: 温度
         rh: 相対湿度
-        rotomg: 腐朽速度係数        
         """
         # 引数（壁のインデックス、質点番号、温度、相対湿度、普及速度の緩和係数（0～1））
         # 齋藤先生の熱シンポを読むこと
@@ -783,7 +706,6 @@ class WoodDecayModel:
         # ある温度と湿度を超えた状態を脱したとしても積算時間は残る。
         # 超えた時間を積算し、それがあるレベルを超えると質量現象がはじまる。
     
-
         w = -1.0  # OSB (TIN関数に渡すパラメータと推測)
         rh_growth = 98.0
         dloss = 0.0
@@ -791,46 +713,11 @@ class WoodDecayModel:
         dt_damage = 60 * 60 * 24  # 1日 (秒)
 
         # --- 発芽期 (Initial response time) ---
-        if tmp <= 0.0:
-            self.time_s[k, i] = 0.0
-        else:
-            # 以前定義した RH_CRITICAL を呼び出し
-            # 温度ごとに定義された閾値
-            rhc = RH_CRITICAL(tmp)
 
-            if rh < rhc:
-                self.time_s[k, i] = 0.0
-            # 閾値をこえた
-            else:
-                # TIN関数の呼び出し (引数wが必要)
-                gc, fc = TIN(tmp, rh, w)
-                
-                # ゼロ除算回避
-                if fc != 0:
-                    d1 = -gc / fc
-                else:
-                    d1 = 100.0 # 仮の大きな値
-                
-                # 発芽時間の計算 (TIME_INT)
-                # d1 がある値より大きくなると、、、、
-                # 発芽が始まるまでの時間（相対湿度がある閾値を超えかつある温度を超えた瞬間からの時間）
-                if d1 > 0:
-                    time_int = d1
-                elif d1 > -0.59:
-                    time_int = 0.0
-                else:
-                    time_int = 100.0
-                
-                # 係数調整
-                if time_int <= 0.5:
-                    time_int = 0.5 * dt_damage * 30.0
-                else:
-                    time_int = time_int * dt_damage * 30.0
-                
-                # 時間経過の蓄積
-                self.time_s[k, i] += dt_damage
-                if self.time_s[k, i] > time_int:
-                    self.l_stage[k, i] = 1
+        time_s, l_stage = wood_decay.func_1(theta=theta, rh=rh, time_s=self.time_s[k, i], l_stage=self.l_stage[k, i])
+
+        self.time_s[k, i] = time_s
+        self.l_stage[k, i] = l_stage
 
         # --- 成長期 (Growth Stage) ---
         if 0 < tmp <= 40:
@@ -843,44 +730,13 @@ class WoodDecayModel:
                 self.l_stage[k-1, i] == 1 or 
                 self.l_stage[k+1, i] == 1):
                 
-                # rh_growth は 98 %
-                if rh >= rh_growth:
-                    # 腐朽反応速度の計算
-                    reaction_k = (2.77 - 3.23 * tmp + 0.865 * (tmp**2) - 0.0189 * (tmp**3)) * 1e-10 * rotomg
-                    # reaction_K: 質量減少率, (kg/kg)/s 反応速度係数
-                    # dt_damage: 1日計算 s/d
-                    dloss = reaction_k * self.dt_damage
+                return wood_decay.get_mass_reduction(rh=rh, tmp=tmp)
+            
+            else:
 
-        return dloss
-	
-
-def RH_CRITICAL(tmp):
-    """
-    AIのコメント：温度(tmp)に基づき、臨界相対湿度(rhc)を計算する。
-    """
-
-    if tmp <= 15.0:
-        rhc = -0.5 * tmp + 100.0
-    else:
-        rhc = 92.5
+                return 0.0
         
-    # 上限を100に制限
-    if rhc >= 100.0:
-        rhc = 100.0
-        
-    return rhc
+        else:
 
-
-def TIN(t, rh, w):
-    """
-    AIのコメント：温度(t), 相対湿度(rh), 含水率(?)w に基づき、FCとGCを計算する。
-
-    """
-    
-    fc = (0.1384 * t + 0.4370 * rh - 42.9450 + w * (0.034 * t - 0.021 * rh + 1.721))
-    
-    gc = (-2.2270 * t - 0.0347 * rh + 0.0244 * t * rh + w * (-0.504 * t + 0.0096 * rh + 0.0047 * t * rh))
-          
-    return gc, fc
-
+            return 0.0
 

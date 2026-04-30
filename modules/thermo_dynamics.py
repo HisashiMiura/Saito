@@ -23,6 +23,21 @@ CPL = 4200.0
 # 水の密度, kg / m3
 ROW = 998.0
 
+# 標準大気圧, Pa
+P_ATM = 101325.0
+
+
+def get_x(p_v: float) -> float:
+    """絶対湿度を求める。
+
+    Args:
+        p_v: 水蒸気圧, Pa
+
+    Returns:
+        絶対湿度, kg/kg(DA)
+    """
+
+    return 0.622 * p_v / (P_ATM - p_v)
 
 def get_rho(t: float) -> float:
     """絶対温度tにおける空気の密度を求める。

@@ -148,7 +148,27 @@ class Wall:
     eva_height: float
 
     # 浸水ポイント
+    # 厚壁No.
+    # wall_no: int
+    # 座標
+    # pos: int
+    # 層No
+    # layer_no: int
+    # 浸水率
+    # ratio: float
+    # 閾値風速, m/s
+    # v: float
+
     nrains: list[NRAIN]
+
+    # 雨水浸入ポイントかどうか
+    is_rainpoint: list[bool]
+
+    # 雨水浸入の率
+    wall_fall_ratio: list[float]
+
+    # 閾値風速, m/s
+    wall_fall_wind_threshold: list[float]
 
     # メッシュ番号に対するレイヤーインデックス
     lookup_table: np.ndarray
@@ -197,6 +217,9 @@ class Wall:
 
     # ステップnの水分化学ポテンシャル, J/kg, [I]
     wp_n_is: np.ndarray
+
+    # 水分保有量, kg/s
+    rn: np.ndarray
 
     def p_sv(self, i: int) -> float:
         """飽和水蒸気圧, Pa"""
@@ -476,7 +499,23 @@ class Wall:
     def get_wp_n_pls(
             self, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, wp_is: np.ndarray,
             QQ: float, RN: np.ndarray, XM: np.ndarray, WJRAIN: np.ndarray, WJW: np.ndarray):
-        """ステップn+1における水分化学ポテンシャルを求める。"""
+        """ステップn+1における水分化学ポテンシャルを求める。
+
+        Args:
+            dt (float): _description_
+            oc (OutdoorCondition): _description_
+            theta_r_n (float): _description_
+            wp_r_n (float): _description_
+            wp_is (np.ndarray): _description_
+            QQ: 換気量, m3/s
+            RN (np.ndarray): _description_
+            XM (np.ndarray): _description_
+            WJRAIN: 雨水浸入量, kg/s
+            WJW (np.ndarray): _description_
+
+        Returns:
+            _type_: _description_
+        """
 
         wp_n_pls = np.zeros_like(self.wp_n_is, dtype=float)
 
@@ -526,6 +565,12 @@ class Wall:
 
             PXCOF = 1.0 / 133322.0
 
+            # 湿気伝達率, kg / m2 s Pa
+            alpha_dsh_m = 3.43e-8
+
+            # 水膜の濡れ面積率
+            r_wet = 0.3
+
             if self.is_air_layer_is[i]:
 
                 # PXCOF: 絶対湿度を水蒸気圧にかえる係数
@@ -539,30 +584,24 @@ class Wall:
                 j_wtr_vent_k = self.dgdt(i) * PXCOF * QQ
 
                 # RN: 水膜の保持水分量, kg/m2
-                if RN(i + 1) > 0.0:
-                    # 内側の水膜蒸発量 濡れ面率0.3
-                    # 3.43E-08: 湿気伝達率　kg/(m2 s Pa)
-                    D4 = 3.43E-08 * (self.p_sv(i+1) - XM(i)) * self.area * 0.3
-                else:
-                    D4 = 0.0
 
-                if RN(i - 1) > 0.0:
-                    # 外側の水膜蒸発量 濡れ面率0.3
-                    D5 = 3.43E-08 * (self.p_sv(i-1) - XM(i)) * self.area * 0.3
-                else:
-                    D5 = 0.0
+                # 水膜からの水分移動量, kg/s
+                j_dsh_vap_i_pls = alpha_dsh_m * (self.p_sv(i+1) - XM(i)) * self.area * r_wet if RN[i+1] > 0.0 else 0.0
+
+                j_dsh_vap_i_mns = alpha_dsh_m * (self.p_sv(i-1) - XM(i)) * self.area * r_wet if RN[i-1] > 0.0 else 0.0
 
                 # 風上側は外気にした。（もともとは上流側の通気層の状態量が入ることになっていた。）
                 UHEN += (
                     j_wtr_vent_wp * oc.wp
                     + j_wtr_vent_k * (oc.t_k - t_i)
-                    + D4 + D5
+                    + j_dsh_vap_i_pls
+                    + j_dsh_vap_i_mns
                 )
 
                 SAHEN += j_wtr_vent_wp
 
             # WJRAIN 雨水由来の浸入量
-            D7 = WJRAIN(i)
+            D7 = WJRAIN[i]
 
             # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量, kg/(m3 s)
             D5 = WJW(i) * self.dx_is[i] * self.area
@@ -603,17 +642,86 @@ class Wall:
         # 基準風速は6.5m高さ
         return v_wind * (self.eva_height / 6.5)**0.25
     
-    def _get(self, t:float, wp: float):
+    def get_rn_n_pls(self, wp_is: np.ndarray, oc: OutdoorCondition, p_v_rm: float, dt: float):
+        
+        rn = np.zeros(shape=self.n_mesh_total, dtype=float)
+        wjrain = np.zeros(shape=self.n_mesh_total, dtype=float)
 
-        _, vp = GOFF(t=t)
-        rh = WPTRE(wp=wp, t=t)
-        dgdu = get_dgdu(rh=rh, t=t)
-        dgdt = get_dgdt(rh=rh, t=t)
+        for i in range(self.n_mesh_total):
+            
+            if self.is_rainpoint:
 
-        # 水膜からの蒸発量
-        # 濡れ面積率は0.3とする。
-        # 3.43E-08は湿気伝達率, kg/(m2 s Pa)
-        D4 = 3.
+                if self.is_outside_surface:
+                    mns = oc.xod
+                elif self.is_air_layer_is[i-1]:
+                    rh = WPTRE(wp=wp_is[i-1], t=self.t_n_is[i-1])
+                    _, vsp = GOFF(t=self.t_n_is[i-1])
+                    mns = vsp * rh * 0.01
+                else:
+                    mns = wp_is[i-1]
+
+                if self.is_inside_surface:
+                    pls = p_v_rm
+                elif self.is_air_layer_is[i+1]:
+                    rh = WPTRE(wp=wp_is[i+1], t=self.t_n_is[i+1])
+                    _, vsp = GOFF(t=self.t_n_is[i+1])
+                    pls = vsp * rh * 0.01
+                else:
+                    pls = wp_is[i+1]
+
+                # （材料番号が10～12）（セメント系材料：サイディングとか）
+                # 水分伝導率, kg/ms(J/kg)
+                if self.material_is[i].id >= 10 and self.material_is[i].id <= 12:
+                    # 飽和時の水分伝導率 3.73e-6 kg/ms(J/kg)　いぶし瓦 by 伊庭　D論
+                    rmdl = 3.73e-6
+                else:
+                    # 木製品を想定
+                    rmdl = 3.73e-6 * 0.05
+                # バックシーラー透水抵抗 2.4e+5 m2sPa/kg by 長村
+                r = 2.4e5
+                # コンダクタンス (kg/s) / m2 (J/kg)
+                c = 1 / (self.dx_is[i] / rmdl) + r / self.dgdu(i)
+
+                    
+                # 当該質点が飽和している前提で計算する。
+                # 3.43E-08：湿気伝達率 kg/(m2 s Pa))
+                # 水分流の計算, kg/(m2 s)                            
+                # 0.3 = 濡れ面率
+                if self.is_outside_surface or self.is_air_layer_is[i-1]:
+                    p_sv = GOFF(t=self.t_n_is[i])
+                    f_mns = 3.43e-8 * (mns - p_sv) * 0.3
+                else:
+                    f_mns = c * (mns - wp_is[i])                                
+                if self.is_inside_surface or self.is_air_layer_is[i+1]:
+                    p_sv = GOFF(t=self.t_n_is[i])
+                    f_pls = 3.43e-8 * (pls - p_sv) * 0.3
+                else:
+                    f_pls = c * (pls - wp_is[i])
+
+                # 水幕の水分量（保持している水の量）, kg/m2
+                # D2 はポテンシャル
+                # D4 は蒸発量
+                # HRN は前のステップの水分量
+                
+                # 水膜の水分量の計算, kg/m2
+                rn = (f_mns + f_pls + self.get_swjrain(oc=oc, i=i)) * dt + self.rn[i]
+
+                # 水幕からの吸水量（表面に水幕があって材料に吸われる分）
+                # 水幕が残っている場合は飽和水蒸気圧（水分伝導率で計算）
+                if rn < 0.0:
+                    rn_n_pls = 0.0
+    
+                    # RNがゼロの場合は水幕がないので、雨水が直接材料に吸われることになる。
+                    w = (self.get_swjrain(oc=oc, i=i) + self.rn[i]) * self.area
+                else:
+                    rn_n_pls = rn
+                    w = c * (0 - self.wp_n_is) * self.area
+                
+                rn[i] = rn_n_pls
+                wjrain[i] = w
+        
+        return rn, wjrain
+
 
 
 
@@ -666,7 +774,7 @@ class Wall:
         return confrains
     
     def get_swjrain(self, oc: OutdoorCondition, i: int):
-        """_summary_
+        """メッシュ番号iで指定されたセルへの浸水量(kg/m2s)を計算する。
 
         Args:
             oc (OutdoorCondition): _description_
@@ -775,10 +883,38 @@ class Wall:
         # 評価高さ, m
         eva_height = ipt_wall.eva_height
 
-        nrains: list[NRAIN] = get_nrains_of_walls(wall_index=i)
+        # NRAIN Class
+        # 厚壁No. 
+        # wall_no: int
+        # 座標
+        # pos: int
+        # 層No
+        # layer_no: int
+        # 浸水率
+        # ratio: float
+        # 閾値風速, m/s
+        # v: float
+
+        nrains_list: list[NRAIN] = get_nrains_of_walls(wall_index=i)
+
+        # 雨水浸入ポイントかどうか
+        is_rainpoint = np.full(n_mesh_total, False)
+
+        # 雨水浸入の率
+        wall_fall_ratio = np.zeros(n_mesh_total)
+
+        # 閾値風速, m/s
+        wall_fall_wind_threshold = np.zeros(n_mesh_total)
+
+        for nrain in nrains_list:
+            is_rainpoint[nrain.pos] = True
+            wall_fall_ratio[nrain.pos] = nrain.ratio
+            wall_fall_wind_threshold[nrain.pos] = nrain.v
 
         # 初期温度, K, [I]
         t_init_is = [layers[layer_index].initial_temp + ATP for layer_index in lookup_table]
+
+        rn = np.zeros(n_mesh_total)
 
         return Wall(
             kwtype=d['kwtype'],
@@ -791,7 +927,7 @@ class Wall:
             n_mesh_total=n_mesh_total,
             state=state,
             eva_height=eva_height,
-            nrains=nrains,
+            nrains=nrains_list,
             dx_is=dx_is,
             is_outside_end_point_is=is_outside_end_point_is,
             is_inside_end_point_is=is_inside_end_point_is,
@@ -806,7 +942,11 @@ class Wall:
             cond_m_o_is=cond_m_o_is,
             cond_m_i_is=cond_m_i_is,
             t_n_is=t_init_is,
-            wsurf=wsurf
+            wsurf=wsurf,
+            is_rainpoint=is_rainpoint,
+            wall_fall_ratio=wall_fall_ratio,
+            wall_fall_wind_threshold=wall_fall_wind_threshold,
+            rn=rn
         )
 
     @classmethod
