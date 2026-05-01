@@ -4,7 +4,7 @@ import pandas as pd
 import os
 
 from config import ATP
-from .thermo_dynamics import GOFF, get_wp
+from .thermo_dynamics import GOFF, get_wp, get_rho
 import solar_position
 from date_operation import get_step_d, get_step_d_t
 
@@ -68,6 +68,11 @@ class OutdoorCondition:
     def rh(self):
         """相対湿度, %"""
         return self.xod / self.vp_sat * 100.0
+    
+    @property
+    def rho(self):
+        """密度, kg/m3"""
+        return get_rho(t=self.t_k)
 
 
 @dataclass

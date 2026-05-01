@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 # 室内温度の初期値, deg.C
 TMPIC = 15.0
 
@@ -14,3 +12,30 @@ HTC_TW = 9.3
 
 # 方位のズレ
 HOI = 0
+
+# 収束計算をするか否か
+NREPT = True
+
+# 緯度, 度
+HIDO = 36.7
+
+# 経度, 度
+HKEIDO = 137.21
+
+# 時間分割（1/DT {h}）
+NDVD = 20
+
+# 腐敗緩和係数
+ROTOMOG = 1.0
+
+# 水分生成の扱いをするか否か
+I_HCOFF = True
+
+# 収束計算の加速係数
+OMG = 1.2
+
+# 温度の収束条件
+EPS1 = 0.01
+
+# 水分化学ポテンシャルの収束条件
+EPS2 = 1e2

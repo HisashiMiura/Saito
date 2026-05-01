@@ -8,7 +8,7 @@ from .surface_solar import get_surface_solar_d_t
 from .weather import OutdoorCondition
 from config import HOI
 from nrain import NRAIN, get_nrains_of_walls
-from .thermo_dynamics import ATP, DIFF, get_dgdt, get_dgdu, get_wp, RW, CALDPDU, ROW, CPL, GOFF, WPTRE
+from .thermo_dynamics import ATP, DIFF, get_dgdt, get_dgdu, get_wp, RW, CALDPDU, ROW, CPL, GOFF, WPTRE, get_rho
 from .direction import Direction
 from .materials import Materials, Material
 from .input_data import InputWall
@@ -221,6 +221,20 @@ class Wall:
     # 水分保有量, kg/s
     rn: np.ndarray
 
+    # 発芽までの蓄積時間, [I]
+    time_s_is: np.ndarray
+
+    # 発芽の有無, [I]
+    l_stage_is: np.ndarray
+
+    # 腐朽により減少した質量の割合, [I]
+    m_loss: np.ndarray
+
+    wjw: np.ndarray
+
+    def theta_n_is(self, i: int) -> float:
+        return self.t_n_is[i] - ATP
+
     def p_sv(self, i: int) -> float:
         """飽和水蒸気圧, Pa"""
         return GOFF(t=self.t_n_is[i])[1]
@@ -425,7 +439,7 @@ class Wall:
                 y=self.RMDL(i) / self.dx_is[i]
             )
 
-    def get_t_n_pls(self, t_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, QQ: float, t_upstream: float):
+    def get_t_n_pls(self, t_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, v_air: float, t_upstream: float):
 
         t_is_next = np.zeros_like(t_is, dtype=float)
 
@@ -489,8 +503,8 @@ class Wall:
             if self.is_air_layer_is:
                 # 空気層の場合に移流分を考慮する。
                 # 空気の容積比熱, J/(m3 K)                             
-                UHEN =+ 1300.0 * QQ * t_upstream
-                SAHEN =+ 1300.0 * QQ
+                UHEN =+ 1300.0 * v_air[i] * t_upstream
+                SAHEN =+ 1300.0 * v_air[i]
             
             t_is_next[i] = UHEN / SAHEN
 
@@ -722,8 +736,20 @@ class Wall:
         
         return rn, wjrain
 
+    def get_v_air(self, oc: OutdoorCondition):
+        """通気層の換気量を求める。
+        """
 
+        v_air = np.zeros(self.n_mesh_total, dtype=float)
 
+        for i in range(self.n_mesh_total):
+
+            if self.is_air_layer_is[i]:
+
+                rho_i = get_rho(t=self.t_n_is)
+                v_air[i] = self.alpha_a_ls * (2 / oc.rho * abs(oc.rho - rho_i) * 9.8 * self.height) ** 0.5
+        
+        return v_air
 
     def get_confrains(self, v_wind: float, wind_direction: float):
         """_summary_
@@ -916,6 +942,14 @@ class Wall:
 
         rn = np.zeros(n_mesh_total)
 
+        time_s_is = np.zeros(n_mesh_total)
+
+        l_stage_is = np.full(shape=n_mesh_total, fill_value=False)
+
+        m_loss = np.zeros(n_mesh_total)
+
+        wjw = np.zeros(n_mesh_total)
+
         return Wall(
             kwtype=d['kwtype'],
             direction=direction,
@@ -946,7 +980,11 @@ class Wall:
             is_rainpoint=is_rainpoint,
             wall_fall_ratio=wall_fall_ratio,
             wall_fall_wind_threshold=wall_fall_wind_threshold,
-            rn=rn
+            rn=rn,
+            time_s_is=time_s_is,
+            l_stage_is=l_stage_is,
+            m_loss=m_loss,
+            wjw=wjw
         )
 
     @classmethod

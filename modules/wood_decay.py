@@ -1,5 +1,7 @@
 import numpy as np
 
+from modules.config import ROTOMOG
+
 
 # 三浦コメント：このパラメータが何なのか不明
 # OSB
@@ -11,64 +13,101 @@ W = -1.0
 RH_GROWTH = 98.0
 
 
-def func_1(theta: float, rh: float, time_s: float, l_stage: bool):
+def get_mass_loss_is(l_stage_is: list[bool], theta_is: list[float], rh_is: list[float]):
+
+    mass_loss_is = np.zeros_like(a=l_stage_is, dtype=float)
+
+    for i in range(len(l_stage_is)):
+
+        # 両側が発芽しているかフラグが立っていれば b=True にする。
+        # この判定はセルの分割の仕方に大きく依存するため、物理的にもっと普遍的な記述がないか？
+        if i == 0:
+            if l_stage_is[i] and l_stage_is[i+1]:
+                b = True
+            else:
+                b = False
+        elif i == len(l_stage_is) - 1:
+            if l_stage_is[i-1] and l_stage_is[i]:
+                b = True
+            else:
+                b = False
+        else:
+            if l_stage_is[i-1] and l_stage_is[i] and l_stage_is[i+1]:
+                b = True
+            else:
+                b = True
+        
+        if b:
+            mass_loss_is[i] = get_mass_reduction(rh=rh_is[i], theta=theta_is[i]) * ROTOMOG
+        else:
+            mass_loss_is[i] = 0.0
+
+    return mass_loss_is
+
+
+def update_time_s(theta: float, rh: float, time_s: float) -> float:
+
+    # 温度ごとに定義された相対湿度の閾値。
+    rhc = rh_threshold(theta=theta)
 
     # 温度が0℃以下になると積算時間がリセットされる。
-    if theta <= 0.0:
+    # 相対湿度の閾値を超えない場合は積算時間がリセットされる。
+    # この前に書いてある温度が0℃以下というのは必要ないのではないか？
+    if theta <= 0.0 and rh < rhc:
     
-        time_s = 0.0
-        return time_s, l_stage
+        return 0.0
+    
+    else:
+
+        # 時間経過の蓄積
+        time_s += 24 * 3600
+        
+        return time_s
+
+
+def update_stage(theta: float, rh: float, time_s: float, l_stage: bool):
+
+    # 温度ごとに定義された相対湿度の閾値。
+    rhc = rh_threshold(theta=theta)
+
+    # 温度が0℃以下になると積算時間がリセットされる。
+    # 相対湿度の閾値を超えない場合は積算時間がリセットされる。
+    # この前に書いてある温度が0℃以下というのは必要ないのではないか？
+    if theta <= 0.0 and rh < rhc:
+    
+        return l_stage
     
     else:
     
-        # 温度ごとに定義された相対湿度の閾値。
-        rhc = rh_threshold(theta=theta)
+        # TIN関数の呼び出し (引数wが必要)
+        # wという変数があったが固定値だったため関数内に記述した。
+        # w が何かは不明。フォートランのコメント「OSB」で-1.0
+        gc, fc = tin(theta=theta, rh=rh)
 
-        # 相対湿度の閾値を超えない場合は積算時間がリセットされる。
-        # この前に書いてある温度が0℃以下というのは必要ないのではないか？
-        if rh < rhc:
-
-            time_s = 0.0
-            return time_s, l_stage
-
+        # ゼロ除算回避
+        if fc != 0:
+            d1 = - gc / fc
         else:
+            d1 = 100.0 # 仮の大きな値
 
-            # TIN関数の呼び出し (引数wが必要)
-            # wという変数があったが固定値だったため関数内に記述した。
-            # w が何かは不明。フォートランのコメント「OSB」で-1.0
-            gc, fc = tin(theta=theta, rh=rh)
-
-            # ゼロ除算回避
-            if fc != 0:
-                d1 = - gc / fc
-            else:
-                d1 = 100.0 # 仮の大きな値
-
-            # 発芽時間の計算 (TIME_INT)
-            # d1 がある値より大きくなると、、、、
-            # 発芽が始まるまでの時間（相対湿度がある閾値を超えかつある温度を超えた瞬間からの時間）
-            if d1 > 0:
-                time_int = d1
-            elif d1 > -0.59:
-                time_int = 0.0
-            else:
-                time_int = 100.0
-            
-            # 係数調整
-            time_int = max(time_int, 0.5) * 30.0 * 24 * 3600
-            
-            # 時間経過の蓄積
-            time_s += 24 * 3600
-
-            if time_s > time_int:
-                l_stage = True
-            
-            return time_s, l_stage
+        # 発芽時間の計算 (TIME_INT)
+        # d1 がある値より大きくなると、、、、
+        # 発芽が始まるまでの時間（相対湿度がある閾値を超えかつある温度を超えた瞬間からの時間）
+        if d1 > 0:
+            time_int = d1
+        elif d1 > -0.59:
+            time_int = 0.0
+        else:
+            time_int = 100.0
+        
+        # 係数調整
+        time_int = max(time_int, 0.5) * 30.0 * 24 * 3600
+        
+        if time_s > time_int:
+            l_stage = True
+        
+        return l_stage
    
-
-def func_2():
-
-    
 
 def rh_threshold(theta: float) -> float:
     """発芽する際の相対湿度の閾値を求める。
@@ -105,22 +144,23 @@ def tin(theta: float, rh, w):
     return gc, fc
 
 
-def get_mass_reduction(rh: float, tmp: float):
+def get_mass_reduction(rh: float, theta: float):
     """_summary_
 
     Args:
         rh: 相対湿度, %
-        tmp: 温度, ℃
+        theta: 温度, ℃
     """
 
     # 相対湿度が閾値以上の場合質量減少が起きる。
-    if rh >= RH_GROWTH:
+    # 温度が0℃より大かつ40℃以下
+    if rh >= RH_GROWTH and theta > 0.0 and theta <= 40.0:
 
         # 腐朽反応速度の計算
         # 齋藤先生の論文の係数か？
         # 反応速度定数, (kg/kg)/s
         # 反応速度定数とは質量減少率（腐朽前の質量に対する腐朽時の質量減少量の比）を時間で除した値。
-        k = (2.77 - 3.23 * tmp + 0.865 * (tmp**2) - 0.0189 * (tmp**3)) * 1e-10
+        k = (2.77 - 3.23 * theta + 0.865 * (theta**2) - 0.0189 * (theta**3)) * 1e-10
 
         # 1日あたりの質量減少量, (kg/kg)/d
         # 1日あたりにしているが、かえって複雑になるため、時々刻々質量減少量を計算するモデルにした方が良い。
