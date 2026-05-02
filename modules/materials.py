@@ -15,7 +15,7 @@ class Material:
     lambda_h: float
 
     # 湿気伝導率, (kg/s)/(m Pa)　ラムダダッシュ
-    lambda_m: float
+    lambda_dsh_m: float
 
     # 比熱, J/(kg K)　シー
     c: float
@@ -95,7 +95,7 @@ class Material:
         return Material(
             name=name,
             lambda_h=thermal_conductivity,
-            lambda_m=moisture_conductivity,
+            lambda_dsh_m=moisture_conductivity,
             c=specific_heat,
             rho=density,
             psi0=porosity,

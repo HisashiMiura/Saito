@@ -245,6 +245,11 @@ class Wall:
         return WPTRE(wp=self.wp_n_is, t=self.t_n_is)
     
     @property
+    def p_v(self, i: int) -> float:
+        """水蒸気圧, Pa"""
+        return self.p_sv(i) * self.rh[i]
+    
+    @property
     def TMPC(self):
         return self.state.TMPC
     
@@ -276,7 +281,7 @@ class Wall:
             d1 = self.rh[i] * 0.01
             return 1.87E-11 * d1**2.4019 * math.exp(-0.78864 * ( 1 - d1**1.1471))  #*3.45   !  Moisture conductivity (kg/msPa)  ASHRAE
         else:
-            return self.material_is[i].lambda_m
+            return self.material_is[i].lambda_dsh_m
     
     def DPDU(self, i: int):
         """(m3/m3)/(J/kg)"""
@@ -512,7 +517,7 @@ class Wall:
           
     def get_wp_n_pls(
             self, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, wp_is: np.ndarray,
-            QQ: float, RN: np.ndarray, XM: np.ndarray, WJRAIN: np.ndarray, WJW: np.ndarray):
+            v_air_is: np.ndarray, RN: np.ndarray, WJRAIN: np.ndarray):
         """ステップn+1における水分化学ポテンシャルを求める。
 
         Args:
@@ -523,9 +528,7 @@ class Wall:
             wp_is (np.ndarray): _description_
             QQ: 換気量, m3/s
             RN (np.ndarray): _description_
-            XM (np.ndarray): _description_
             WJRAIN: 雨水浸入量, kg/s
-            WJW (np.ndarray): _description_
 
         Returns:
             _type_: _description_
@@ -593,16 +596,17 @@ class Wall:
 
                 # (kg/s)/(J/kg) = ??? * Pa/(J/kg) * ((kg/m3)/Pa) * m3/s
                 # もとのプログラムから1.2を消した
-                j_wtr_vent_wp = self.dgdu(i) * PXCOF * QQ
+                j_wtr_vent_wp = self.dgdu(i) * PXCOF * v_air_is[i]
                 # (kg/s)/K = kg/m3 * Pa/K * (1/Pa) * m3/s
-                j_wtr_vent_k = self.dgdt(i) * PXCOF * QQ
+                j_wtr_vent_k = self.dgdt(i) * PXCOF * v_air_is[i]
 
                 # RN: 水膜の保持水分量, kg/m2
 
                 # 水膜からの水分移動量, kg/s
-                j_dsh_vap_i_pls = alpha_dsh_m * (self.p_sv(i+1) - XM(i)) * self.area * r_wet if RN[i+1] > 0.0 else 0.0
 
-                j_dsh_vap_i_mns = alpha_dsh_m * (self.p_sv(i-1) - XM(i)) * self.area * r_wet if RN[i-1] > 0.0 else 0.0
+                j_dsh_vap_i_pls = alpha_dsh_m * (self.p_sv(i+1) - self.p_v(i)) * self.area * r_wet if RN[i+1] > 0.0 else 0.0
+
+                j_dsh_vap_i_mns = alpha_dsh_m * (self.p_sv(i-1) - self.p_v(i)) * self.area * r_wet if RN[i-1] > 0.0 else 0.0
 
                 # 風上側は外気にした。（もともとは上流側の通気層の状態量が入ることになっていた。）
                 UHEN += (
@@ -618,7 +622,7 @@ class Wall:
             D7 = WJRAIN[i]
 
             # WJW：木材が分解した場合にセルロースが分解された場合に発生する水分量, kg/(m3 s)
-            D5 = WJW(i) * self.dx_is[i] * self.area
+            D5 = self.wjw[i] * self.dx_is[i] * self.area
 
             UHEN += D5 + D7
 
