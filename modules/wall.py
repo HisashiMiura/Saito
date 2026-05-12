@@ -445,6 +445,20 @@ class Wall:
             )
 
     def get_t_n_pls(self, t_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, v_air: float, t_upstream: float):
+        """_summary_
+
+        Args:
+            t_is: 温度_description_
+            dt (float): _description_
+            oc (OutdoorCondition): _description_
+            theta_r_n (float): _description_
+            wp_r_n (float): _description_
+            v_air (float): _description_
+            t_upstream (float): _description_
+
+        Returns:
+            収束計算における次の計算の温度, K
+        """
 
         t_is_next = np.zeros_like(t_is, dtype=float)
 
@@ -698,7 +712,7 @@ class Wall:
                 # バックシーラー透水抵抗 2.4e+5 m2sPa/kg by 長村
                 r = 2.4e5
                 # コンダクタンス (kg/s) / m2 (J/kg)
-                c = 1 / (self.dx_is[i] / rmdl) + r / self.dgdu(i)
+                c = 1 / (self.dx_is[i] / rmdl + r / self.dgdu(i))
 
                     
                 # 当該質点が飽和している前提で計算する。

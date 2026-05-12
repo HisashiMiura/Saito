@@ -215,6 +215,8 @@ for NYEAR in range(1, period.LYEAR + 1):
                         wall.wjw[i] = HCOFF * mass_loss_is[i] * wall.gma_is[i] / 86400
 
 
+# 尾崎モデルの残骸
+# 水分ポテンシャルを計算する場合、化学ポテンシャルにこれを足さないといけない。
 def SATUWPT(TP):
 
     # J/(kg K)
