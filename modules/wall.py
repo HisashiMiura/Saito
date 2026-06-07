@@ -1,18 +1,25 @@
 from dataclasses import dataclass
 import numpy as np
-import math
-from scipy.stats import rayleigh
 from numpy.typing import NDArray 
 
-from .surface_solar import get_surface_solar_d_t
 from .weather import OutdoorCondition
 from config import HOI
 from nrain import NRAIN, get_nrains_of_walls
-from .thermo_dynamics import ATP, DIFF, get_dgdt, get_dgdu, get_wp, RW, CALDPDU, ROW, CPL, GOFF, WPTRE, get_rho
+from .thermo_dynamics import ATP, DIFF, get_dpv_dt, get_dpv_dmu, RW, ROW, CPL, GOFF, get_rh, get_rho
 from .direction import Direction
 from .materials import Materials, Material
-from .input_data import InputWall
+from .input_wall import InputWall
 from .wall_surface import WallSurface
+from modules.state import State
+from modules.config import INITIAL_WALL_TEMPERATURE, INITIAL_WALL_RERATIVE_HUMIDITY
+from modules import nrain
+from modules.cell import (
+    Cell, 
+    CellOutsideEndPoint, CellInsideEndPoint, CellOutsideEndPointAirLayer, CellInsideEndPointAirLayer,
+    CellInterior, CellOutsideSurface, CellInsideSurface, CellAirLayer
+)
+from modules import wood_decay
+
 
 @dataclass
 class Layer:
@@ -84,8 +91,8 @@ class WallState:
     # 温度, deg.C
     TMPC: np.ndarray
 
-    # ステップ n+1 における絶対温度, K
-    t_n_pls: np.ndarray
+    # 絶対温度, K
+    t: np.ndarray
 
     # ステップ n における絶対温度, K
     HTMP: np.ndarray
@@ -102,11 +109,17 @@ class WallState:
         return WallState(
             rh=rh,
             TMPC=theta,
-            t_n_pls=t,
+            t=t,
             HTMP=t
         )
-
-
+    
+    @property
+    def theta(self):
+        return self.t - ATP
+    
+    @theta.setter
+    def theta(self, value):
+        self.t = value + ATP
 
 
 
@@ -120,12 +133,6 @@ class Wall:
     # 壁表面
     wsurf: WallSurface
 
-    # 壁種類
-    kwtype: int
-
-    # 方位
-    direction: Direction
-
     # 相当開口面積（αA）, m2
     alpha_a_ls: list[float]
 
@@ -135,82 +142,20 @@ class Wall:
     # 面積, m2
     area: float
 
-    # layers
-    layers: np.ndarray
-
     # メッシュ数
     n_mesh_total: int
-
-    # 状態量
-    state: WallState
-
-    # 評価高さ
-    eva_height: float
-
-    # 浸水ポイント
-    # 厚壁No.
-    # wall_no: int
-    # 座標
-    # pos: int
-    # 層No
-    # layer_no: int
-    # 浸水率
-    # ratio: float
-    # 閾値風速, m/s
-    # v: float
-
-    nrains: list[NRAIN]
-
-    # 雨水浸入ポイントかどうか
-    is_rainpoint: list[bool]
-
-    # 雨水浸入の率
-    wall_fall_ratio: list[float]
-
-    # 閾値風速, m/s
-    wall_fall_wind_threshold: list[float]
-
-    # メッシュ番号に対するレイヤーインデックス
-    lookup_table: np.ndarray
 
     # 質点iの質点間距離, m, [I]
     dx_is: np.ndarray
 
-    # 室外側の端点かどうか, [I]
-    is_outside_end_point_is: np.ndarray
-
-    # 室内側の端点かどうか, [I]
-    is_inside_end_point_is: np.ndarray
-
     # 通気層かどうか, [I]
     is_air_layer_is: np.ndarray
-
-    # 質点iの体積, m3, [I]
-    v_is: np.ndarray
-
-    # 熱容量, J/(m3 K), [I]
-    gcp_is: np.ndarray
-
-    # 熱伝導率, W/(m K), [I]
-    lambda_is: np.ndarray
 
     # 密度, kg/m3, [I]
     gma_is: np.ndarray
 
     # 材料, [I]
     material_is: list[Material]
-
-    # 室外側の端点における熱コンダクタンス, W/(m2 K), [I]
-    cond_h_o_is: np.ndarray
-
-    # 室内側の端点における熱コンダクタンス, W/(m2 K), [I]
-    cond_h_i_is: np.ndarray
-
-    # 室外側の端点における湿気コンダクタンス, kg/(m2 s Pa), [I]
-    cond_m_o_is: np.ndarray
-
-    # 室内側の端点における湿気コンダクタンス, kg/(m2 s Pa), [I]
-    cond_m_i_is: np.ndarray
 
     # ステップnの絶対温度, K, [I]
     t_n_is: np.ndarray
@@ -232,256 +177,101 @@ class Wall:
 
     wjw: np.ndarray
 
-    def theta_n_is(self, i: int) -> float:
-        return self.t_n_is[i] - ATP
+    # ステップnの状態量, [I]
+    state_n_is: list[State]
 
-    def p_sv(self, i: int) -> float:
-        """飽和水蒸気圧, Pa"""
-        return GOFF(t=self.t_n_is[i])[1]
+    rain_leakage_is: list[nrain.RainLeakage]
 
-    @property    
-    def rh(self):
-        """相対湿度, %"""
-        return WPTRE(wp=self.wp_n_is, t=self.t_n_is)
+    cells_is: list[Cell]
+
+    def dpv_dmu(self, i: int) -> float:
+        """水蒸気圧を水分化学ポテンシャルで偏微分（絶対温度一定）した値, Pa / (J / kg)"""
+        return get_dpv_dmu(rh=self.state_n_is[i].rh, t=self.state_n_is[i].t)
+
+    def dpv_dt(self, i: int) -> float:
+        """水蒸気圧を絶対温度で偏微分（水分化学ポテンシャル一定）した値, Pa / K"""
+        return get_dpv_dt(rh=self.state_n_is[i].rh, t=self.state_n_is[i].t)
     
-    @property
-    def p_v(self, i: int) -> float:
-        """水蒸気圧, Pa"""
-        return self.p_sv(i) * self.rh[i]
-    
-    @property
-    def TMPC(self):
-        return self.state.TMPC
-    
-    def set_TMPC(self, i: int, TMPC: float):
-        self.state.TMPC[i] = TMPC
-
-    @property
-    def t_n_pls(self):
-        return self.state.t_n_pls
-    
-    def set_t_n_pls(self, i: int, t_n_pls: float):
-        self.state.t_n_pls[i] = t_n_pls
-
-    def RMDL(self, i: int):
-        """水分伝導率, kg/(m s (J/kg))"""
-
-        if self.rh[i] > 90.0 and self.material_is[i].id == 5:
-            return DIFF(rh=self.rh[i], k=self.t_n_pls[i], material=self.material_is[i])
-        else:
-            return 0.0
-
-    def get_layer(self, i) -> Layer:
-        return self.layers[self.lookup_table[i]]
-    
-    def RMDG(self, i: int) -> float:
-        """湿気伝導率, kg /(m s Pa) """
-        # 後退差分において湿気伝導率の値は相対湿度に依存性があるが前の時刻の相対湿度を用いることにより線形化している。
-        if self.material_is[i].id == 5:
-            d1 = self.rh[i] * 0.01
-            return 1.87E-11 * d1**2.4019 * math.exp(-0.78864 * ( 1 - d1**1.1471))  #*3.45   !  Moisture conductivity (kg/msPa)  ASHRAE
-        else:
-            return self.material_is[i].lambda_dsh_m
-    
-    def DPDU(self, i: int):
-        """(m3/m3)/(J/kg)"""
-        return CALDPDU(wpt=self.wp_n_is[i], tp=self.t_n_is[i], gma=self.gma_is[i], ml0=self.get_layer(i).num, material=self.material_is[i])
-    
-    def is_outside_surface(self, i: int) -> bool:
-        """質点iが室外側表面"""
-
-        return i == 0
-    
-    def is_inside_surface(self, i: int) -> bool:
-        """質点iが室内側表面"""
-
-        return i == self.n_mesh_total - 1
-
-    def dgdu(self, i: int) -> float:
-        """水分化学ポテンシャルに対する水蒸気圧の微分, Pa / (J / kg)"""
-        return get_dgdu(rh=self.rh[i], t=self.t_n_pls[i])
-
-    def dgdt(self, i: int) -> float:
-        """絶対温度に対する水蒸気圧の微分, Pa / K"""
-        return get_dgdt(rh=self.rh[i], t=self.t_n_pls[i])
-    
-    def cap(self, i: int) -> float:
-        """熱容量, J/K"""
-
-        # 質点iが空気層の場合
-        if self.is_air_layer_is[i]:
-            #1300は空気の体積熱容量, J/(kg K)
-            return 1300.0 * self.dx_is[i] * self.area
-        else:
-            return self.v_is[i] * self.gcp_is[i]
-
-    def cap_m(self, i: int) -> float:
-        """水分移動に伴う容量項, kg/(J/kg)"""
-
-        # 質点iが空気層の場合
-        if self.is_air_layer_is[i]:
-            # 空気層の場合の熱容量はなし
-            # ステップnにおける水分量は移流の計算項で表現されている。
-            return 0.0
-        else:
-            # ROW: 水の密度, kg/m3
-            # DPDU: 容積含水率を水分化学ポテンシャルで微分した値, (m3/m3)/(J/kg)
-            # v_is: 容積, m3
-            # kg/(J/kg) = kg/m3 * (m3/m3)/(J/kg) * m3
-            return ROW * self.DPDU(i=i) * self.v_is[i]
-
     def _c_h_t_i_mns(self, i: int) -> float:
         """温度差を駆動力とする熱移動に関する係数（室外側）, W/(K m2)"""
-    
-        # 各レイヤの室外側の端点の場合
-        if self.is_outside_end_point_is[i]:
-                                    
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return self.cond_h_o_is[i]
-
-        else:
-            return self.get_series_combination(
-                x=(self.lambda_is[i-1]) / self.dx_is[i-1],
-                y=(self.lambda_is[i]) / self.dx_is[i]
-            )
+        return 1 / (self.cells_is[i-1].r_h_pls + self.cells_is[i].r_h_mns)
     
     def _c_h_t_i_pls(self, i: int) -> float:
         """温度差を駆動力とする熱移動に関する係数（室内側）, W/(K m2)"""
-
-        # 各レイヤの室内側の端点の場合
-        if self.is_inside_end_point_is[i]:
-
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return self.cond_h_i_is[i]
-
-        else:
-            return self.get_series_combination(
-                x=(self.lambda_is[i+1]) / self.dx_is[i+1], 
-                y=(self.lambda_is[i]) / self.dx_is[i]
-            )
+        return 1 / (self.cells_is[i+1].r_h_mns + self.cells_is[i].r_h_pls)
 
     def _c_vap_t_i_mns(self, i: int) -> float:
         """温度差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/K"""
-
-        # 各レイヤの室外側の端点の場合
-        if self.is_outside_end_point_is[i]:
-                                    
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return self.cond_m_o_is[i] * self.dgdt(i)
-
-        else:
-            # RMDG：湿気伝導率, kg / (m s Pa)
-            # dgdt：水蒸気圧の温度勾配, Pa/K
-            return self.get_series_combination(
-                x=(self.RMDG(i-1) * self.dgdt(i-1)) / self.dx_is[i-1],
-                y=(self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
-            )
+        # dpv_dt：水蒸気圧の温度勾配, Pa/K
+        # r_m：透湿抵抗, (m2 s Pa)/kg
+        return 1 / (self.cells_is[i-1].r_m_pls / self.dpv_dt(i-1) + self.cells_is[i].r_m_mns / self.dpv_dt(i))
 
     def _c_vap_t_i_pls(self, i: int) -> float:
         """温度差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/K"""
-
-        # 各レイヤの室内側の端点の場合
-        if self.is_inside_end_point_is[i]:
-
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            return self.cond_m_i_is[i] * self.dgdt(i)
-
-        else:
-            return self.get_series_combination(
-                x=(self.RMDG(i+1) * self.dgdt(i+1)) / self.dx_is[i+1],
-                y=(self.RMDG(i) * self.dgdt(i)) / self.dx_is[i]
-            )
+        return 1 / (self.cells_is[i+1].r_m_mns / self.dpv_dt(i+1) + self.cells_is[i].r_m_pls / self.dpv_dt(i))
 
     def _c_vap_wp_i_mns(self, i: int) -> float:
         """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
-
-        # 各レイヤの室外側の端点の場合
-        if self.is_outside_end_point_is[i]:
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            # 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = (kg/s)/(J/kg) 
-            return self.cond_m_o_is[i] * self.dgdu(i)
-        else:
-            # RMDG: 湿気伝導率, kg/(m s Pa)
-            # dgdu: 水分化学ポテンシャルに対する水蒸気圧の微分, Pa / (J/kg)
-            return self.get_series_combination(
-                x=self.RMDG(i-1) * self.dgdu(i-1) / self.dx_is[i-1],
-                y=self.RMDG(i) * self.dgdu(i) / self.dx_is[i]
-            )
+        # RMDG: 湿気伝導率, kg/(m s Pa)
+        # dgdu: 水分化学ポテンシャルに対する水蒸気圧の微分, Pa / (J/kg)
+        return 1 / (self.cells_is[i-1].r_h_pls / self.dpv_dmu(i-1) + self.cells_is[i].r_h_mns / self.dpv_dmu(i))
     
     def _c_vap_wp_i_pls(self, i: int) -> float:
         """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
-
-        # 各レイヤの室内側の端点の場合
-        if self.is_inside_end_point_is[i]:
-            # TODO: 本来であれば、隣との接触抵抗は無限大の値の入力を必要としない抵抗としてもっておき、隣側の抵抗も加算した上での逆数とすべきではないか。
-            # 湿気コンダクタンス, kg/(m2 s Pa) * Pa/(J/kg) * m2 = W/(J/kg) 
-            return self.cond_m_i_is[i] * self.dgdu(i)
-        else:
-            return self.get_series_combination(
-                x=self.RMDG(i+1) * self.dgdu[i+1] / self.dx_is[i+1],
-                y=self.RMDG(i) * self.dgdu[i] / self.dx_is[i]
-            )
+        return 1 / (self.cells_is[i+1].r_h_mns / self.dpv_dmu[i+1] + self.cells_is[i].r_h_pls / self.dpv_dmu[i])
     
     def _c_liq_wp_i_mns(self, i: int) -> float:
         """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
+        return 1 / (self.cells_is[i-1].r_liq_wp_pls + self.cells_is[i].r_liq_wp_mns)
 
-        if self.is_outside_end_point_is[i]:
-            return 0.0
-        else:
-            return self.get_series_combination(
-                x=self.RMDL(i-1) / self.dx_is[i-1],
-                y=self.RMDL(i) / self.dx_is[i]
-            )
-    
     def _c_liq_wp_i_pls(self, i: int) -> float:
         """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
+        return 1 / (self.cells_is[i+1].r_liq_wp_mns + self.cells_is[i].r_liq_wp_pls)
 
-        if self.is_inside_end_point_is[i]:
-            return 0.0
-        else:
-            return self.get_series_combination(
-                x=self.RMDL(i+1) / self.dx_is[i+1],
-                y=self.RMDL(i) / self.dx_is[i]
-            )
-
-    def get_t_n_pls(self, t_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, v_air: float, t_upstream: float):
-        """_summary_
+    def get_t_next_is(self, t_is: np.ndarray, dt: float, oc_n_pls: OutdoorCondition, t_r_n_pls: float, wp_r_n_pls: float, v_air_n: float, t_upstream_n_pls: float):
+        """反復法における次の計算の温度を求める。
 
         Args:
-            t_is: 温度_description_
-            dt (float): _description_
-            oc (OutdoorCondition): _description_
-            theta_r_n (float): _description_
-            wp_r_n (float): _description_
-            v_air (float): _description_
-            t_upstream (float): _description_
+            t_is: 温度（反復法における一時的な温度）, K, [I]
+            dt: 時間刻み幅, s
+            oc_n_pls: ステップn+1における外気条件
+            t_r_n_pls: ステップn+1における室温, K
+            wp_r_n_pls: ステップn+1における室内の水分化学ポテンシャル, J/kg
+            v_air_n: ステップnからステップn+1における通気層内の空気の平均流速, m/s
+            t_upstream_n_pls: ステップn+1における通気層内に流入する空気の温度, K
 
         Returns:
             収束計算における次の計算の温度, K
         """
 
-        t_is_next = np.zeros_like(t_is, dtype=float)
+        # 反復法における次の計算の温度（の入れ物）, K, [I]
+        t_next_is = np.zeros_like(t_is, dtype=float)
 
         for i in range(self.n_mesh_total):
 
-            ### 質点の温度
-            # 室外側
-            t_i_mns = oc.t if self.is_outside_surface(i=i) else t_is[i - 1]
+            ### 質点の温度, K
+            # マイナス側の温度
+            # 質点iが室外側の端点の場合は外気温を用いる。
+            t_i_mns = oc_n_pls.t_k if isinstance(self.cells_is[i], CellOutsideSurface) else t_is[i - 1]
             # 中央（後退差分計算において温度については繰り返し計算に用いる温度を採用する。）
             t_i = t_is[i]
-            # 室内側
-            t_i_pls = theta_r_n if self.is_inside_surface(i=i) else t_is[i + 1]
+            # プラス側の温度
+            # 質点iが室内側の端点の場合は室内温度を用いる。
+            t_i_pls = t_r_n_pls if isinstance(self.cells_is[i], CellInsideSurface) else t_is[i + 1]
 
-            ### 質点の水分化学ポテンシャル
+            ### 質点の水分化学ポテンシャル, J/kg, [I]
             # 室外側
-            wp_i_mns = oc.wp if self.is_outside_surface(i=i) else self.wp_n_is[i - 1]
+            # 質点iが室外側の端点の場合は外気の水分化学ポテンシャルを用いる。
+            wp_i_mns = oc_n_pls.wp if isinstance(self.cells_is[i], CellOutsideSurface) else self.wp_n_is[i - 1]
             # 中央（後退差分計算において水分化学ポテンシャルについては前のステップの値を用いる。）
             wp_i = self.wp_n_is[i]
             # 室内側
-            wp_i_pls = wp_r_n if self.is_inside_surface(i=i) else self.wp_n_is[i + 1]
+            # 質点iが室内側の端点の場合は室内の水分化学ポテンシャルを用いる。
+            wp_i_pls = wp_r_n_pls if isinstance(self.cells_is[i], CellInsideSurface) else self.wp_n_is[i + 1]
 
             # 日射による吸収熱量, W
-            q_sol_d_t_k = self.wsurf.get_q_sol_d_t_k(oc=oc) if self.is_outside_surface(i=i) else 0.0
+            # 質点iが室外側の端点の場合は日射による吸収熱量を考慮する。
+            q_sol_d_t_k = self.wsurf.get_q_sol_d_t_k(oc=oc_n_pls) if isinstance(self.cells_is[i], CellOutsideSurface) else 0.0
 
             # 温度差を駆動力とする熱移動に関する係数, W/K
             c_h_t_i_mns = (self._c_h_t_i_mns(i) + RW * self._c_vap_t_i_mns(i)) * self.area
@@ -496,7 +286,8 @@ class Wall:
             j_liq_i_mns = self._c_liq_wp_i_mns(i) * (wp_i_mns - wp_i) * self.area
             j_liq_i_pls = self._c_liq_wp_i_pls(i) * (wp_i_pls - wp_i) * self.area
 
-            cap = self.cap(i) / dt
+            # 熱容量を時間刻みで除した値, W/K
+            cap = self.cells_is[i].cap * self.area / dt
 
             # W
             UHEN = (
@@ -522,15 +313,15 @@ class Wall:
             if self.is_air_layer_is:
                 # 空気層の場合に移流分を考慮する。
                 # 空気の容積比熱, J/(m3 K)                             
-                UHEN =+ 1300.0 * v_air[i] * t_upstream
-                SAHEN =+ 1300.0 * v_air[i]
+                UHEN =+ 1300.0 * v_air_n[i] * t_upstream_n_pls
+                SAHEN =+ 1300.0 * v_air_n[i]
             
-            t_is_next[i] = UHEN / SAHEN
+            t_next_is[i] = UHEN / SAHEN
 
-        return t_is_next
-          
+        return t_next_is
+
     def get_wp_n_pls(
-            self, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float, wp_is: np.ndarray,
+            self, wp_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float,
             v_air_is: np.ndarray, RN: np.ndarray, WJRAIN: np.ndarray):
         """ステップn+1における水分化学ポテンシャルを求める。
 
@@ -554,19 +345,19 @@ class Wall:
             
             # 質点の温度
             # 室外側
-            t_i_mns = oc.t_k if self.is_outside_surface(i=i) else self.t_n_is[i - 1]
+            t_i_mns = oc.t_k if isinstance(self.cells_is[i], CellOutsideSurface) else self.t_n_is[i - 1]
             # 中央（後退差分計算において温度については前のステップの値を用いる。）
             t_i = self.t_n_is[i]
             # 室内側
-            t_i_pls = theta_r_n + ATP if self.is_inside_surface(i=i) else self.t_n_is[i + 1]
+            t_i_pls = theta_r_n + ATP if isinstance(self.cells_is[i], CellInsideSurface) else self.t_n_is[i + 1]
 
             # 質点の水分化学ポテンシャル
             # 室外側
-            wp_i_mns = oc.wp if self.is_outside_surface(i=i) else wp_is[i - 1]
+            wp_i_mns = oc.wp if isinstance(self.cells_is[i], CellOutsideSurface) else wp_is[i - 1]
             # 中央
             wp_i = wp_is[i]
             # 室内側
-            wp_i_pls = wp_r_n if self.is_inside_surface(i=i) else wp_is[i + 1]
+            wp_i_pls = wp_r_n if isinstance(self.cells_is[i], CellInsideSurface) else wp_is[i + 1]
 
             # 水分化学ポテンシャル差を駆動力とする水分（水蒸気＋液水）移動に関する係数, (kg/s) / (J/kg)
             c_vap_liq_wp_i_mns = (self._c_vap_wp_i_mns(i=i) + self._c_liq_wp_i_mns(i=i)) * self.area
@@ -577,17 +368,19 @@ class Wall:
             j_vap_i_mns = self._c_vap_t_i_mns(i=i) * self.area * (t_i_mns - t_i)
             j_vap_i_pls = self._c_vap_t_i_pls(i=i) * self.area * (t_i_pls - t_i)
 
+            cap_m = self.cells_is[i].cap_m(state=self.state_n_is)
+
             # (kg/s)/(J/kg)
             # m_cap: kg/(J/kg)
             SAHEN = (
-                self.cap_m(i=i) / dt
+                cap_m / dt
                 + c_vap_liq_wp_i_mns
                 + c_vap_liq_wp_i_pls
             )
 
             # kg/s
             UHEN = (
-                self.cap_m(i=i) / dt * self.wp_n_is[i]
+                cap_m / dt * self.wp_n_is[i]
                 + c_vap_liq_wp_i_mns * wp_i_mns
                 + c_vap_liq_wp_i_pls * wp_i_pls
                 + j_vap_i_mns
@@ -610,17 +403,17 @@ class Wall:
 
                 # (kg/s)/(J/kg) = ??? * Pa/(J/kg) * ((kg/m3)/Pa) * m3/s
                 # もとのプログラムから1.2を消した
-                j_wtr_vent_wp = self.dgdu(i) * PXCOF * v_air_is[i]
+                j_wtr_vent_wp = self.dpv_dmu(i) * PXCOF * v_air_is[i]
                 # (kg/s)/K = kg/m3 * Pa/K * (1/Pa) * m3/s
-                j_wtr_vent_k = self.dgdt(i) * PXCOF * v_air_is[i]
+                j_wtr_vent_k = self.dpv_dt(i) * PXCOF * v_air_is[i]
 
                 # RN: 水膜の保持水分量, kg/m2
 
                 # 水膜からの水分移動量, kg/s
 
-                j_dsh_vap_i_pls = alpha_dsh_m * (self.p_sv(i+1) - self.p_v(i)) * self.area * r_wet if RN[i+1] > 0.0 else 0.0
+                j_dsh_vap_i_pls = alpha_dsh_m * (self.state_n_is[i+1].p_v_sat - self.state_n_is[i].p_v) * self.area * r_wet if RN[i+1] > 0.0 else 0.0
 
-                j_dsh_vap_i_mns = alpha_dsh_m * (self.p_sv(i-1) - self.p_v(i)) * self.area * r_wet if RN[i-1] > 0.0 else 0.0
+                j_dsh_vap_i_mns = alpha_dsh_m * (self.state_n_is[i-1].p_v_sat - self.state_n_is[i].p_v) * self.area * r_wet if RN[i-1] > 0.0 else 0.0
 
                 # 風上側は外気にした。（もともとは上流側の通気層の状態量が入ることになっていた。）
                 UHEN += (
@@ -654,48 +447,43 @@ class Wall:
 
         return wp_n_pls
 
-    def get_series_combination(x: float, y: float) -> float:
-
-        if x + y != 0.0:
-            return x * y / (x + y)
-        else:
-            return 0.0
-
-    def get_v_wind_eva_k(self, v_wind: float):
-        """評価高さにおける風速を求める。
-
-        Args:
-            v_wind: 風速, m/s
-
-        Returns:
-            評価高さにおける風速, m/s
-        """
-
-        # 基準風速は6.5m高さ
-        return v_wind * (self.eva_height / 6.5)**0.25
-    
     def get_rn_n_pls(self, wp_is: np.ndarray, oc: OutdoorCondition, p_v_rm: float, dt: float):
+
+        # 評価風速, m/s
+        v_mod = self.wsurf.get_v_wind_eva_k(v_wind=oc.v_wind)
+
+        # 風向と壁の法線のなす角度, 度
+        angle = self.wsurf.get_wind_angle(wind_direction=oc.wind_direction)
+
+        # 降水量, mm/s
+        rf = oc.rainfall / 3600.0
+
+        # 湿気伝達率, kg/(m s Pa)
+        alpha_dsh_m = 3.43e-8
         
         rn = np.zeros(shape=self.n_mesh_total, dtype=float)
         wjrain = np.zeros(shape=self.n_mesh_total, dtype=float)
 
         for i in range(self.n_mesh_total):
             
-            if self.is_rainpoint:
+            if self.rain_leakage_is[i].is_rainpoint:
 
-                if self.is_outside_surface:
+                # 材料面への浸水量, kg?(m2 s)
+                swjrain = self.rain_leakage_is[i].get_confrain(v_mod=v_mod, angle=angle, rf=rf) * rf
+
+                if isinstance(self.cells_is[i], CellOutsideSurface):
                     mns = oc.xod
                 elif self.is_air_layer_is[i-1]:
-                    rh = WPTRE(wp=wp_is[i-1], t=self.t_n_is[i-1])
+                    rh = get_rh(mu=wp_is[i-1], t=self.t_n_is[i-1])
                     _, vsp = GOFF(t=self.t_n_is[i-1])
                     mns = vsp * rh * 0.01
                 else:
                     mns = wp_is[i-1]
 
-                if self.is_inside_surface:
+                if isinstance(self.cells_is[i], CellInsideSurface):
                     pls = p_v_rm
                 elif self.is_air_layer_is[i+1]:
-                    rh = WPTRE(wp=wp_is[i+1], t=self.t_n_is[i+1])
+                    rh = get_rh(mu=wp_is[i+1], t=self.t_n_is[i+1])
                     _, vsp = GOFF(t=self.t_n_is[i+1])
                     pls = vsp * rh * 0.01
                 else:
@@ -712,21 +500,21 @@ class Wall:
                 # バックシーラー透水抵抗 2.4e+5 m2sPa/kg by 長村
                 r = 2.4e5
                 # コンダクタンス (kg/s) / m2 (J/kg)
-                c = 1 / (self.dx_is[i] / rmdl + r / self.dgdu(i))
+                c = 1 / (self.dx_is[i] / rmdl + r / self.dpv_dmu(i))
 
                     
                 # 当該質点が飽和している前提で計算する。
                 # 3.43E-08：湿気伝達率 kg/(m2 s Pa))
                 # 水分流の計算, kg/(m2 s)                            
                 # 0.3 = 濡れ面率
-                if self.is_outside_surface or self.is_air_layer_is[i-1]:
+                if isinstance(self.cells_is[i], CellOutsideSurface) or self.is_air_layer_is[i-1]:
                     p_sv = GOFF(t=self.t_n_is[i])
-                    f_mns = 3.43e-8 * (mns - p_sv) * 0.3
+                    f_mns = alpha_dsh_m * (mns - p_sv) * 0.3
                 else:
                     f_mns = c * (mns - wp_is[i])                                
-                if self.is_inside_surface or self.is_air_layer_is[i+1]:
+                if isinstance(self.cells_is[i], CellInsideSurface) or self.is_air_layer_is[i+1]:
                     p_sv = GOFF(t=self.t_n_is[i])
-                    f_pls = 3.43e-8 * (pls - p_sv) * 0.3
+                    f_pls = alpha_dsh_m * (pls - p_sv) * 0.3
                 else:
                     f_pls = c * (pls - wp_is[i])
 
@@ -736,7 +524,7 @@ class Wall:
                 # HRN は前のステップの水分量
                 
                 # 水膜の水分量の計算, kg/m2
-                rn = (f_mns + f_pls + self.get_swjrain(oc=oc, i=i)) * dt + self.rn[i]
+                rn = (f_mns + f_pls + swjrain) * dt + self.rn[i]
 
                 # 水幕からの吸水量（表面に水幕があって材料に吸われる分）
                 # 水幕が残っている場合は飽和水蒸気圧（水分伝導率で計算）
@@ -744,7 +532,8 @@ class Wall:
                     rn_n_pls = 0.0
     
                     # RNがゼロの場合は水幕がないので、雨水が直接材料に吸われることになる。
-                    w = (self.get_swjrain(oc=oc, i=i) + self.rn[i]) * self.area
+                    w = (swjrain + self.rn[i]) * self.area
+                # 水膜がある。
                 else:
                     rn_n_pls = rn
                     w = c * (0 - self.wp_n_is) * self.area
@@ -769,102 +558,46 @@ class Wall:
         
         return v_air
 
-    def get_confrains(self, v_wind: float, wind_direction: float):
-        """_summary_
+    def update_t_wd_gen(self):
 
-        Args:
-            v_wind: 風速, m/s
-        """
+        for i in range(self.n_mesh_total):
 
-        v_mod = self.get_v_wind_eva_k(v_wind=v_wind)
+            state = self.state_n_is[i]
 
-        x = np.linspace(0.1 * v_mod, 3.0 * v_mod, 30)
+            time_s = wood_decay.update_time_s(theta=state.theta, rh=state.rh, time_s=self.time_s_is[i])
 
-        confrains = np.zeros_like(self.nrains, dtype=float)
+            l_stage = wood_decay.update_stage(theta=state.theta, rh=state.rh, time_s=self.time_s_is[i])
 
-        for i, nrain in enumerate(self.nrains):
+            self.time_s_is[i] = time_s
 
-            if v_wind > 0.1:
-
-                # 1.5 = 
-
-                # ASHRAE 160-2009
-                # 雨水暴露係数
-                FE = 1.5
-                # 雨水付着係数
-                FD = 1.0
-                # 経験的な定数, kg s / (m3 mm)
-                FL = 0.2
-
-                # TODO: Wind_direction の定義をきちんと確認しないといけない。この式のままだと、北側から時計回りか？
-                # 水平方向などにも対応させないといけないのではないか？
-                # この式は垂直壁にしか対応していないので、3次元的にcosを計算する必要あり。
-                d2 = np.maximum(
-                    nrain.ratio * x * np.cos(np.radians(wind_direction - (180.0 + self.direction.alpha))) * FE * FD * FL,
-                    0.0
-                )
-
-                sigma =  v_mod / np.sqrt(np.pi / 2)
-                weight = rayleigh.pdf(x=x, scale=sigma)
-
-                confrain = np.sum(weight * d2) / np.sum(weight)
-
-            else:
-
-                confrain = 0.0
-            
-            confrains[i] = confrain
-
-        return confrains
-    
-    def get_swjrain(self, oc: OutdoorCondition, i: int):
-        """メッシュ番号iで指定されたセルへの浸水量(kg/m2s)を計算する。
-
-        Args:
-            oc (OutdoorCondition): _description_
-            i: メッシュ番号
-
-        Returns:
-            _type_: _description_
-        """
-
-        confrains = self.get_confrains(v_wind=oc.v_wind, wind_direction=oc.wind_direction)
-
-        # 材表面への浸水量 kg/(m2 s)
-        # rainfall mm/h
-        # confrains: 
-        # 浸水率をパーセントでいれているので、ここで単位換算している。
-        swjrains = 0.01 * oc.rainfall * confrains / 3600.0
-
-        for (nrain, swjrain) in (self.nrains, swjrains):
-            if nrain.pos - 1 == i:
-                return swjrain
-        
-        return 0.0
+            self.l_stage_is[i] = l_stage
 
     @classmethod
-    def read(cls, d: dict, i: int):
+    def read(cls, ipt_wall: InputWall):
 
-        ipt_wall = InputWall.read(d=d)
+        i = 0
 
         layers = [
-            Layer(num=10, name='サイディング', initial_temp=15.0, initial_humidity=50.0, thick=0.016, n_div=5, cond_h_o=22.4, cond_h_i=9.2, cond_m_o=2.00E-11, cond_m_i=3.43E-08, alpha=0.0),
-            Layer(num=2, name='通気層', initial_temp=15.0, initial_humidity=50.0, thick=0.025, n_div=1, cond_h_o=9.2, cond_h_i=9.2, cond_m_o=3.43E-08, cond_m_i=3.43E-08, alpha=0.085),
-            Layer(num=6, name='石膏ボード', initial_temp=10.0, initial_humidity=50.0, thick=0.042, n_div=5, cond_h_o=9.2, cond_h_i=50.0, cond_m_o=3.43E-08, cond_m_i=7.75E-07, alpha=0.0),
-            Layer(num=5, name='構造用合板1', initial_temp=10.0, initial_humidity=80.0, thick=0.009, n_div=6, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=7.75E-07, cond_m_i=7.75E-07, alpha=0.0),
-            Layer(num=3, name='グラスウール1', initial_temp=10.0, initial_humidity=50.0, thick=0.1, n_div=5, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=7.75E-07, cond_m_i=2.00E-11, alpha=0.0),
-            Layer(num=5, name='構造用合板1', initial_temp=10.0, initial_humidity=80.0, thick=0.012, n_div=6, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=2.00E-11, cond_m_i=7.75E-07, alpha=0.0),
-            Layer(num=6, name='石膏ボード', initial_temp=10.0, initial_humidity=50.0, thick=0.042, n_div=5, cond_h_o=50.0, cond_h_i=9.2, cond_m_o=7.75E-07, cond_m_i=2.60E-10, alpha=0.0)
+            Layer(num=10, name='サイディング', thick=0.016, n_div=5, cond_h_o=22.4, cond_h_i=9.2, cond_m_o=2.00E-11, cond_m_i=3.43E-08, alpha=0.0),
+            Layer(num=2, name='通気層', thick=0.025, n_div=1, cond_h_o=9.2, cond_h_i=9.2, cond_m_o=3.43E-08, cond_m_i=3.43E-08, alpha=0.085),
+            Layer(num=6, name='石膏ボード', thick=0.042, n_div=5, cond_h_o=9.2, cond_h_i=50.0, cond_m_o=3.43E-08, cond_m_i=7.75E-07, alpha=0.0),
+            Layer(num=5, name='構造用合板1', thick=0.009, n_div=6, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=7.75E-07, cond_m_i=7.75E-07, alpha=0.0),
+            Layer(num=3, name='グラスウール1', thick=0.1, n_div=5, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=7.75E-07, cond_m_i=2.00E-11, alpha=0.0),
+            Layer(num=5, name='構造用合板1', thick=0.012, n_div=6, cond_h_o=50.0, cond_h_i=50.0, cond_m_o=2.00E-11, cond_m_i=7.75E-07, alpha=0.0),
+            Layer(num=6, name='石膏ボード', thick=0.042, n_div=5, cond_h_o=50.0, cond_h_i=9.2, cond_m_o=7.75E-07, cond_m_i=2.60E-10, alpha=0.0)
         ]
 
         # 面積, m2
-        area = ipt_wall.len_long * ipt_wall.len_short
+        area = ipt_wall.len_vertical * ipt_wall.len_horizontal
+
+        # レイヤー分割数, [L]
+        n_div_ls = [layer.n_div for layer in layers]
 
         # Layerそれぞれにおける室外側と室内側のメッシュ番号, [L], [L]
-        outside_end_point_mesh_indices, inside_end_point_mesh_indices = _get_first_and_last_mesh_indices(layers=layers)
+        outside_end_point_mesh_index_ls, inside_end_point_mesh_index_ls = _get_outside_and_inside_end_point_mesh_index_ls(n_div_ls=n_div_ls)
 
         # 相当開口面積（αA）, m2
-        alpha_a_ls = [layer.alpha * layer.thick * ipt_wall.len_short for layer in layers]
+        alpha_a_ls = [layer.alpha * layer.thick * ipt_wall.len_horizontal for layer in layers]
 
         # ある質点がどのレイヤーに対応するかを保持するリスト, [I]
         lookup_table = create_lookup_table(layers)
@@ -873,10 +606,10 @@ class Wall:
         n_mesh_total = sum([layer.n_div for layer in layers])
 
         # 室外側の端点かどうか, [I]
-        is_outside_end_point_is = np.array([outside_end_point_mesh_indices[layer_index] == i for (i, layer_index) in enumerate(lookup_table)])
+        is_outside_end_point_is = np.array([outside_end_point_mesh_index_ls[layer_index] == i for (i, layer_index) in enumerate(lookup_table)])
 
         # 室内側の端点かどうか, [I]
-        is_inside_end_point_is = np.array([inside_end_point_mesh_indices[layer_index] == i for (i, layer_index) in enumerate(lookup_table)])
+        is_inside_end_point_is = np.array([inside_end_point_mesh_index_ls[layer_index] == i for (i, layer_index) in enumerate(lookup_table)])
 
         # 熱コンダクタンス（室外側）, W/(m2 K), [I]
         cond_h_o_is = np.array([layers[layer_index].cond_h_o if is_outside_end_point_is[i] else 0.0 for (i, layer_index) in enumerate(lookup_table)])
@@ -893,6 +626,7 @@ class Wall:
         # 通気層かどうか, [I]
         is_air_layer_is = np.array([layers[layer_index].name == '通気層' for layer_index in lookup_table])
 
+
         # 質点iの質点間距離, m, [I]
         # レイヤー表面の質点において、SideA側の質点の場合はSideB側のみが、SideB側の質点の場合はSideA側のみが定義される。
         dx_is = np.array([layers[layer_index].dx for layer_index in lookup_table])
@@ -901,12 +635,6 @@ class Wall:
         ms = Materials()
         material_is = [ms.get_material(name=layers[layer_index].name) for layer_index in lookup_table]
 
-        # 質点iの容積比熱, J/(m3 K), [I]
-        gcp_is = np.array([material_i.c * material_i.rho for material_i in material_is])
-
-        # 質点iの熱伝導率, W/(m K), [I]
-        lambda_is = np.array([material_i.lambda_h for material_i in material_is])
-
         # 質点iの密度, kg/m3, [I]
         gma_is = np.array([material_i.rho for material_i in material_is])
 
@@ -914,7 +642,76 @@ class Wall:
         # 端点の場合は体積が端点以外の部分の半分になる。（空気層は除く。）
         v_is = np.where(is_outside_end_point_is | is_inside_end_point_is, 0.5, 1.0) * dx_is * area
         
-        state = WallState.init(layers, lookup_table)
+        cells_is = []
+
+        for (i, layer_index) in enumerate(lookup_table):
+
+            # 質点が室外側表面の場合
+            if i == 0:
+                cell = CellOutsideSurface(
+                    x=dx_is[i]/2,
+                    material=material_is[i]
+                )
+
+            # 質点が室内側表面の場合
+            elif i == n_mesh_total - 1:
+                cell = CellInsideSurface(
+                    x=dx_is[i]/2,
+                    material=material_is[i]
+                )
+
+            # 質点が空気層の場合
+            elif is_air_layer_is[i]:
+                cell = CellAirLayer(x=dx_is[i])
+
+            # 質点が室外側の端点の場合
+            elif is_outside_end_point_is[i]:
+
+                # 質点が室外側の端点でかつ空気層に面する場合
+                if is_air_layer_is[i-1]:
+                    cell = CellOutsideEndPointAirLayer(
+                        x=dx_is[i]/2,
+                        material=material_is[i]
+                    )
+
+                else:
+                    cell = CellOutsideEndPoint(
+                        x=dx_is[i]/2,
+                        material=material_is[i],
+                        cond_h_o=cond_h_o_is[i],
+                        cond_m_o=cond_m_o_is[i]
+                    )
+
+            # 質点が室内側の端点の場合
+            elif is_inside_end_point_is[i]:
+
+                # 質点が室内側の端点でかつ空気層に面する場合
+                if is_air_layer_is[i+1]:
+                    cell = CellInsideEndPointAirLayer(
+                        x=dx_is[i]/2,
+                        material=material_is[i]
+                    )
+
+                else:
+                    cell = CellInsideEndPoint(
+                        x=dx_is[i]/2,
+                        material=material_is[i],
+                        cond_h_i=cond_h_i_is[i],
+                        cond_m_i=cond_m_i_is[i]
+                    )
+
+            else:
+                cell = CellInterior(
+                    x=dx_is[i],
+                    material=material_is[i]
+                )
+
+            cells_is.append(cell)
+
+        states = [
+            State.init(t=INITIAL_WALL_TEMPERATURE + ATP, rh=INITIAL_WALL_RERATIVE_HUMIDITY)
+            for _ in range(n_mesh_total)
+        ]
 
         wsurf = WallSurface.read(iw=ipt_wall)
 
@@ -942,18 +739,18 @@ class Wall:
         nrains_list: list[NRAIN] = get_nrains_of_walls(wall_index=i)
 
         # 雨水浸入ポイントかどうか
-        is_rainpoint = np.full(n_mesh_total, False)
+        is_rainpoint_is = np.full(n_mesh_total, False)
 
         # 雨水浸入の率
-        wall_fall_ratio = np.zeros(n_mesh_total)
+        wall_fall_ratio_is = np.zeros(n_mesh_total)
 
         # 閾値風速, m/s
-        wall_fall_wind_threshold = np.zeros(n_mesh_total)
+        wall_fall_wind_threshold_is = np.zeros(n_mesh_total)
 
         for nrain in nrains_list:
-            is_rainpoint[nrain.pos] = True
-            wall_fall_ratio[nrain.pos] = nrain.ratio
-            wall_fall_wind_threshold[nrain.pos] = nrain.v
+            is_rainpoint_is[nrain.pos] = True
+            wall_fall_ratio_is[nrain.pos] = nrain.ratio
+            wall_fall_wind_threshold_is[nrain.pos] = nrain.v
 
         # 初期温度, K, [I]
         t_init_is = [layers[layer_index].initial_temp + ATP for layer_index in lookup_table]
@@ -968,51 +765,30 @@ class Wall:
 
         wjw = np.zeros(n_mesh_total)
 
+        rain_leakage_is = [
+            nrain.RainLeakage(is_rainpoint=is_rainpoint, ratio=wall_fall_ratio, wind_threshold=wall_fall_wind_threshold)
+            for (is_rainpoint, wall_fall_ratio, wall_fall_wind_threshold) in zip(is_rainpoint_is, wall_fall_ratio_is, wall_fall_wind_threshold_is)]
+
         return Wall(
-            kwtype=d['kwtype'],
-            direction=direction,
             alpha_a_ls=alpha_a_ls,
             height=height,
             area=area,
-            layers=layers,
-            lookup_table=lookup_table,
             n_mesh_total=n_mesh_total,
-            state=state,
-            eva_height=eva_height,
-            nrains=nrains_list,
             dx_is=dx_is,
-            is_outside_end_point_is=is_outside_end_point_is,
-            is_inside_end_point_is=is_inside_end_point_is,
             is_air_layer_is=is_air_layer_is,
-            v_is=v_is,
-            gcp_is=gcp_is,
-            lambda_is=lambda_is,
             gma_is=gma_is,
             material_is=material_is,
-            cond_h_o_is=cond_h_o_is,
-            cond_h_i_is=cond_h_i_is,
-            cond_m_o_is=cond_m_o_is,
-            cond_m_i_is=cond_m_i_is,
             t_n_is=t_init_is,
             wsurf=wsurf,
-            is_rainpoint=is_rainpoint,
-            wall_fall_ratio=wall_fall_ratio,
-            wall_fall_wind_threshold=wall_fall_wind_threshold,
             rn=rn,
             time_s_is=time_s_is,
             l_stage_is=l_stage_is,
             m_loss=m_loss,
-            wjw=wjw
+            wjw=wjw,
+            state_n_is=states,
+            rain_leakage_is=rain_leakage_is,
+            cells_is=cells_is
         )
-
-    @classmethod
-    def read_default(cls):
-
-        ds = get_ds()
-
-        walls = [Wall.read(d=d, i=i) for i, d in enumerate(ds)]
-
-        return walls
 
 
 def create_lookup_table(layers: list[Layer]) -> np.ndarray:
@@ -1025,37 +801,29 @@ def create_lookup_table(layers: list[Layer]) -> np.ndarray:
     return np.array(lookup_table)
 
 
-def _get_first_and_last_mesh_indices(layers: list[Layer]) -> tuple[list[int], list[int]]:
-    
-    first_mesh_indices = [0] * len(layers)
-    last_mesh_indices = [0] * len(layers)
+def _get_outside_and_inside_end_point_mesh_index_ls(n_div_ls: list[int]) -> tuple[list[int], list[int]]:
+    """各レイヤーについて室外側の質点番号と室内側の質点番号を計算する。
 
-    for i, layer in enumerate(layers):
+    Args:
+        n_div_ls: レイヤーの分割数, [L]
+
+    Returns:
+        室外側の質点番号, [L]
+        室内側の質点番号, [L]
+    """
+    
+    outside_end_point_mesh_index_ls = [0] * len(n_div_ls)
+    inside_end_point_mesh_index_ls = [0] * len(n_div_ls)
+
+    for i, n_div_l in enumerate(n_div_ls):
 
         if i == 0:
-            last_mesh_indices[i] = 0
+            outside_end_point_mesh_index_ls[i] = 0
         else:
-            last_mesh_indices[i] = first_mesh_indices[i - 1] + 1
+            outside_end_point_mesh_index_ls[i] = inside_end_point_mesh_index_ls[i - 1] + 1
 
-        first_mesh_indices[i] = last_mesh_indices[i] + layer.n_div - 1
+        inside_end_point_mesh_index_ls[i] = outside_end_point_mesh_index_ls[i] + n_div_l - 1
    
-    return first_mesh_indices, last_mesh_indices
+    return outside_end_point_mesh_index_ls, inside_end_point_mesh_index_ls
 
-
-def get_ds():
-
-    # 換気計算の高さと壁の高さが傾斜がある場合は一致しない。
-    return [
-        {
-            'kwtype': 1,
-            'direction': 'e',
-            'len_long': 7.0,
-            'len_short': 0.42,
-            'height': 7.0,
-            'angle': 90.0,
-            'emissivity': 0.9,
-            'walltypes': 1,
-            'eva_height': 4.2,
-        },
-    ]
 

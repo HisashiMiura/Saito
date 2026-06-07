@@ -26,6 +26,23 @@ ROW = 998.0
 # 標準大気圧, Pa
 P_ATM = 101325.0
 
+# 室外側表面熱伝達率, W/(m2 K)
+COND_H_O = 22.4
+
+# 室内側表面熱伝達率, W/(m2 K)
+COND_H_I = 9.2
+
+# 通気層表面熱伝達率, W/(m2 K)
+COND_H_AIR = 9.2
+
+# 室外側表面湿気伝達率, (kg/s)/(m2 Pa)
+COND_M_O = 2.0e-11
+
+# 室内側表面湿気伝達率, (kg/s)/(m2 Pa)
+COND_M_I = 3.43e-08
+
+# 通気層表面湿気伝達率, (kg/s)/(m2 Pa)
+COND_M_AIR = 3.43e-08
 
 def get_x(p_v: float) -> float:
     """絶対湿度を求める。
@@ -121,7 +138,7 @@ def FUNCX(rh: float, vp: float) -> float:
     return vp * rh * 0.01 * RMVA / (760.0 * 133.322 - vp * rh * 0.01)
     
 
-def get_dgdu(rh: float, t: float) -> float:
+def get_dpv_dmu(rh: float, t: float) -> float:
     """含水率変化に対する絶対湿度の変化率(DGDU)を計算する。
 
     Args:
@@ -156,7 +173,7 @@ def get_dgdu(rh: float, t: float) -> float:
     return dgdu
 
 
-def get_dgdt(rh: float, t: float) -> float:
+def get_dpv_dt(rh: float, t: float) -> float:
     """温度変化に対する絶対湿度の変化率(DGDT)を計算する。
 
     Args:
@@ -186,11 +203,11 @@ def get_dgdt(rh: float, t: float) -> float:
     return dgdt
 
 
-def WPTRE(wp: float, t: float) -> float:
+def get_rh(mu: float, t: float) -> float:
     """水分化学ポテンシャルから平衡相対湿度 (RH) を計算する。
 
     Args:
-        wp: 水分化学ポテンシャル, J / kg
+        mu: 水分化学ポテンシャル, J / kg
         t: 絶対温度, K
     
     Returns:
@@ -198,18 +215,18 @@ def WPTRE(wp: float, t: float) -> float:
 
     """
     
-    rh = math.exp(wp / RG / t) * 100.0
+    rh = math.exp(mu / RG / t) * 100.0
     
     # 相対湿度は100%を超えることはないので、上限を設定する
     return min(rh, 100.0) 
 
 
-def DIFF(rh:float, k: float, material: Material):
+def DIFF(rh:float, t: float, material: Material):
     """水分伝導率(RML)の計算
 
     Args:
         rh: 相対湿度, %
-        k: 絶対温度, K
+        t: 絶対温度, K
         material: 
     Returns: 水分伝導率, (kg/ms) / (J/kg)
     """
@@ -230,8 +247,8 @@ def DIFF(rh:float, k: float, material: Material):
         rh2 = rh - 0.005
         
         # 微分を差分で近似している計算
-        wp1 = get_wp(rh1, k)
-        wp2 = get_wp(rh2, k)
+        wp1 = get_wp(rh1, t)
+        wp2 = get_wp(rh2, t)
         wd1 = material.get_u(rh=rh1) * 100
         wd2 = material.get_u(rh=rh2) * 100
         
@@ -258,49 +275,43 @@ def DIFF(rh:float, k: float, material: Material):
     return rml
 
 
-def CALDPDU(wpt, tp, gma, ml0, material: Material):
-    """
-    水分化学ポテンシャル変化に対する含水率変化 (DPDU) を計算する。
-    (m3/m3)/(J/kg)
-    分子：含水率, m3/m3
-    分母：水分化学ポテンシャル, J/kg
+def get_dpsi_dmu(mu: float, t: float, gma: float, get_u: callable) -> float:
+    """水分化学ポテンシャル変化に対する含水率変化 (DPDU) を計算する。
+        (m3/m3)/(J/kg)
+        分子：含水率, m3/m3
+        分母：水分化学ポテンシャル, J/kg
+    
+    Args:
+        mu: 水分化学ポテンシャル, J/kg
+        t: 絶対温度, K
+        gma: 材料密度, kg/m3
+        get_u: 含水率を計算する関数
     """
 
-    d1 = wpt
-    
-    # 元のFortranのロジック: 正の値の場合は -100.0 に強制
-    if d1 > 0.0:
-        d1 = -100.0
-    
     # 差分幅の計算 (d1の1%), J/kg
-    dw = abs(d1 * 0.01)
+    dmu = abs(mu * 0.01)
     
     # 微小変化させた含水率, J/kg
-    w1 = d1 + dw
-    w2 = d1 - dw
+    mu1 = mu + dmu
+    mu2 = mu - dmu
     
-    # 以前定義した WPTRE (平衡相対湿度計算) を呼び出し, %
-    rh1 = WPTRE(w1, tp)
-    rh2 = WPTRE(w2, tp)
+    # 相対湿度, %
+    rh1 = get_rh(mu1, t)
+    rh2 = get_rh(mu2, t)
     
-    # 外部定義されている前提の AHGANS, 含水率
-    wd1 = material.get_u(rh1) * 100
-    wd2 = material.get_u(rh2) * 100
+    # 質量基準の含水率外部定義されている前提の AHGANS, 含水率
+    u1 = get_u(rh1)
+    u2 = get_u(rh2)
     
-    # VGTの計算 (0.01は%を小数に戻す係数と推測)
-    # 0.01 * wd: kg/kg
+    # 体積基準の含水率, m3/m3
     # gma: 材料密度　kg/m3
     # ROW: 水の密度　kg/m3
-    # vgtは含水率（m3/m3）　wdはkg/kgだったのをm3/m3に直している。
-    vgt1 = 0.01 * wd1 * gma / ROW
-    vgt2 = 0.01 * wd2 * gma / ROW
+    psi1 = u1 * gma / ROW
+    psi2 = u2 * gma / ROW
     
     # 中央差分による勾配(微分値)の近似
     # 0.5 * (VGT1 - VGT2) / DW
     # dw を2回たしているので2でわっている。
-    if dw != 0:
-        dpdu = 0.5 * (vgt1 - vgt2) / dw
-    else:
-        dpdu = 0.0
+    dpsi_dmu = (psi1 - psi2) / (2 * dmu) 
         
-    return dpdu
+    return dpsi_dmu

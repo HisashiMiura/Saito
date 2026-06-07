@@ -10,6 +10,7 @@ from modules.nrain import set_default_nrains
 from modules.date_operation import get_step_n
 from modules.input_data import InputRoom
 from modules import wood_decay
+from modules.input_wall import InputWall
 
 
 ipt_room = InputRoom.read(d={})
@@ -18,8 +19,24 @@ room = Room.init(ipt_room=ipt_room, n_div=NDVD)
 
 nrains = set_default_nrains()
 
+d_wall = {
+    'kwtype': 1,
+    'direction': 'e',
+    'len_vertical': 7.0,
+    'len_horizontal': 0.42,
+    'height': 7.0,
+    'angle': 90.0,
+    'emissivity': 0.9,
+    'walltypes': 1,
+    'eva_height': 4.2,
+}
 
-walls = Wall.read_default()
+ipt_wall = InputWall.read(d=d_wall)
+
+wall = Wall.read(ipt_wall=ipt_wall)
+
+
+walls = [wall]
 
 dt = 1. / NDVD * 3600.
 
@@ -71,11 +88,6 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     # ////////PUT IN PREBIOUS VALUE///////////
 
-                    for LW, wall in enumerate(walls):
-
-                        for i in range(wall.nrains):
-
-                                wall.t_n_is = wall.t_n_pls
 
                     for w, wall in enumerate(walls):
                         
@@ -94,10 +106,11 @@ for NYEAR in range(1, period.LYEAR + 1):
                     for w, wall in enumerate(walls):
                         
                         # 通気層の換気量, m3/s, [I]
-                        v_air = wall.get_v_air(oc=oc)
+                        v_air_n = wall.get_v_air(oc=oc)
 
-                        v_air_ws_is.append(v_air)
+                        v_air_ws_is.append(v_air_n)
 
+                        # 反復法における壁体内の温度の初期値をステップnの値とする。
                         t_is = wall.t_n_is
 
                         # 収束判定を全ての壁について一気にやっていたところを、壁１枚１枚で判定するように変更した。
@@ -106,14 +119,17 @@ for NYEAR in range(1, period.LYEAR + 1):
                         # その影響度合いが小さいのであれば、陽解法的にステップnの値を用いることによって簡易化する方が、計算速度の観点から良いと思われる。
                         for i in range(500):
 
-                            t_is_next = wall.get_t_n_pls(t_is=t_is, dt=dt, oc=oc, theta_r_n=room.theta_n(n=n), wp_r_n=room.wp_n(n=n), v_air=v_air, t_upstream=oc.t_k)
+                            # 通気層内に流入する空気の温度は外気温度とする。
+                            t_upstream_n_pls = oc.t_k
 
-                            delta_is = t_is_next - t_is
+                            t_is_next = wall.get_t_next_is(t_is=t_is, dt=dt, oc_n_pls=oc, t_r_n_pls=room.t_n(n=n+1), wp_r_n_pls=room.wp_n(n=n+1), v_air_n=v_air_n, t_upstream_n_pls=t_upstream_n_pls)
+
+                            delta_t_is = t_is_next - t_is
 
                             t_is = (t_is_next - t_is) * OMG + t_is
 
                             # ステップn+1とステップnの値の差が許容誤差範囲内に収まったらループを抜ける。
-                            if EPS1 >= np.abs(delta_is).max():
+                            if EPS1 >= np.abs(delta_t_is).max():
                                 break
 
                         # for文が最後までまわりきってしまった（収束しなかった）場合の措置。
@@ -153,13 +169,13 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                         for i in range(500):
                         
-                            wp_is_next = wall.get_wp_n_pls(dt=dt, oc=oc, theta_r_n=theta_r_n, wp_r_n=wp_r_n, wp_is=wp_is, v_air_is=v_air_is, RN=rn_ws_is[w], WJRAIN=wjrain_is)
+                            wp_is_next = wall.get_wp_n_pls(wp_is=wp_is, dt=dt, oc=oc, theta_r_n=theta_r_n, wp_r_n=wp_r_n, v_air_is=v_air_is, RN=rn_ws_is[w], WJRAIN=wjrain_is)
 
-                            delta_is = wp_is_next - wp_is
+                            delta_t_is = wp_is_next - wp_is
 
                             wp_is = (wp_is_next - wp_is) * OMG + wp_is
 
-                            if EPS2 >= np.abs(delta_is).max():
+                            if EPS2 >= np.abs(delta_t_is).max():
                                 break
                         
                         else:
@@ -180,15 +196,15 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                 for i in range(wall.n_mesh_total):
 
-                    time_s = wood_decay.update_time_s(theta=wall.theta_n_is(i), rh=wall.rh[i], time_s=wall.time_s_is[i])
+                    time_s = wood_decay.update_time_s(theta=wall.state_n_is[i].theta, rh=wall.state_n_is[i].rh, time_s=wall.time_s_is[i])
 
-                    l_stage = wood_decay.update_stage(theta=wall.theta_n_is(i), rh=wall.rh[i], time_s=wall.time_s_is[i], l_stage=wall.l_stage_is[i])
-
+                    l_stage = wood_decay.update_stage(theta=wall.state_n_is[i].theta, rh=wall.state_n_is[i].rh, time_s=wall.time_s_is[i], l_stage=wall.l_stage_is[i])
+    
                     wall.time_s_is[i] = time_s
                     wall.l_stage_is[i] = l_stage
                 
                 # 質量減少分, kg/(kg d)
-                mass_loss_is = wood_decay.get_mass_loss_is(l_stage_is=wall.l_stage_is, theta_is=wall.theta_n_is, rh_is=wall.rh)
+                mass_loss_is = wood_decay.get_mass_loss_is(l_stage_is=wall.l_stage_is, theta_is=wall.state_n_is[i].theta, rh_is=wall.state_n_is[i].rh)
 
                 wall.m_loss += mass_loss_is
 
@@ -214,18 +230,4 @@ for NYEAR in range(1, period.LYEAR + 1):
                         # TODO: wall.gma_is は水の密度が正しい                            
                         wall.wjw[i] = HCOFF * mass_loss_is[i] * wall.gma_is[i] / 86400
 
-
-# 尾崎モデルの残骸
-# 水分ポテンシャルを計算する場合、化学ポテンシャルにこれを足さないといけない。
-def SATUWPT(TP):
-
-    # J/(kg K)
-    CPW = ( 30.36 + 0.009615 * TP + 0.00000118 * TP * TP ) / ( 0.018016 )
-
-    FS, VP = GOFF(TP)
-
-    # J/ kg
-    SW=(644243)+CPW*(TP-273.15)-TP*CPW*DLOG(TP/273.15)+461.5*TP*DLOG(VP/101325)
-
-    return SW
 

@@ -5,7 +5,7 @@ from modules.config import ROTOMOG
 
 # 三浦コメント：このパラメータが何なのか不明
 # OSB
-W = -1.0
+WS = -1.0
 
 # 質量減少が起きる場合の相対湿度の閾値か？
 # 齋藤先生に要確認
@@ -50,10 +50,10 @@ def update_time_s(theta: float, rh: float, time_s: float) -> float:
     # 温度ごとに定義された相対湿度の閾値。
     rhc = rh_threshold(theta=theta)
 
-    # 温度が0℃以下になると積算時間がリセットされる。
-    # 相対湿度の閾値を超えない場合は積算時間がリセットされる。
-    # この前に書いてある温度が0℃以下というのは必要ないのではないか？
-    if theta <= 0.0 and rh < rhc:
+    # 相対湿度の閾値を下回る場合は積算時間がリセットされる。
+    # もともと0℃以下だと積算時間がリセットという記述があったが、0℃以下の場合の相対湿度の閾値は100%に設定されるため、
+    # その記述は不要と考えて削除した。
+    if rh < rhc:
     
         return 0.0
     
@@ -67,7 +67,7 @@ def update_time_s(theta: float, rh: float, time_s: float) -> float:
 
 def update_stage(theta: float, rh: float, time_s: float, l_stage: bool):
 
-    # 温度ごとに定義された相対湿度の閾値。
+    # 温度ごとに定義された相対湿度の閾値, %
     rhc = rh_threshold(theta=theta)
 
     # 温度が0℃以下になると積算時間がリセットされる。
@@ -78,11 +78,11 @@ def update_stage(theta: float, rh: float, time_s: float, l_stage: bool):
         return l_stage
     
     else:
-    
-        # TIN関数の呼び出し (引数wが必要)
-        # wという変数があったが固定値だったため関数内に記述した。
-        # w が何かは不明。フォートランのコメント「OSB」で-1.0
-        gc, fc = tin(theta=theta, rh=rh)
+
+        # Mostafa Nofal, Kumar Kumaran, Biological damage function models for durability assessments of wood and woo-based products in building envelopes
+        # Eur. J. Wood Prod. 2011 69:619-631
+        fc = (0.1384 * theta + 0.4370 * rh - 42.9450 + WS * (0.034 * theta - 0.021 * rh + 1.721))        
+        gc = (-2.2270 * theta - 0.0347 * rh + 0.0244 * theta * rh + WS * (-0.504 * theta + 0.0096 * rh + 0.0047 * theta * rh))
 
         # ゼロ除算回避
         if fc != 0:
@@ -125,23 +125,6 @@ def rh_threshold(theta: float) -> float:
         a_min=92.5,
         a_max=100.0
     )
-
-
-def tin(theta: float, rh, w):
-    """
-    Args:
-        theta: 温度, ℃
-        rh: 相対湿度, %
-    
-    TODO: この関数が何なのか、緒言を確認すること。
-
-    """
-
-    fc = (0.1384 * theta + 0.4370 * rh - 42.9450 + W * (0.034 * theta - 0.021 * rh + 1.721))
-    
-    gc = (-2.2270 * theta - 0.0347 * rh + 0.0244 * theta * rh + w * (-0.504 * theta + 0.0096 * rh + 0.0047 * theta * rh))
-    
-    return gc, fc
 
 
 def get_mass_reduction(rh: float, theta: float):

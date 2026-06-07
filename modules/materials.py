@@ -3,6 +3,7 @@ from pandas import Series
 import os
 from dataclasses import dataclass
 import math
+from modules import thermo_dynamics
 
 
 @dataclass
@@ -11,39 +12,24 @@ class Material:
     # 名前
     name: str
 
-    # 熱伝導率, W/(m K)  ラムダ
+    # 熱伝導率, W/(m K)
     lambda_h: float
 
-    # 湿気伝導率, (kg/s)/(m Pa)　ラムダダッシュ
+    # 湿気伝導率, (kg/s)/(m Pa)
     lambda_dsh_m: float
 
-    # 比熱, J/(kg K)　シー
+    # 比熱, J/(kg K)
     c: float
 
-    # 密度 kg/m3　ロー
+    # 密度 kg/m3
     rho: float
 
-    # 空隙率, m3/m3　プサイゼロ
+    # 空隙率, m3/m3
     psi0: float
     
     # 相対湿度（0から1）から含水率（0から1）を求める関数。　
     f_u: callable
 
-    def get_u(self, rh: float):
-        """含水率（0.0～1.0）を求める。（質量含水率） ユー JIS A 1476 で建築材料の含水率測定法 が決められている。
-           ちなみに、容積含水率の場合はプサイを使う場合が多いらしい。
-
-        Args:
-            rh: 相対湿度(0.0～100.0), %
-
-        Returns:
-            質量含水率（0.0～1.0）, kg/kg 水分の重量÷材料の乾燥重量
-        """
-
-        r = rh * 0.01
-
-        return self.f_u(r)
-    
     @classmethod
     def load(cls, name: str, row: Series):
 
@@ -102,7 +88,74 @@ class Material:
             f_u=f_psi
         )
 
+    def get_u(self, rh: float) -> float:
+        """含水率（0.0～1.0）を求める。（質量含水率） ユー JIS A 1476 で建築材料の含水率測定法 が決められている。
+           ちなみに、容積含水率の場合はプサイを使う場合が多いらしい。
 
+        Args:
+            rh: 相対湿度(0.0～100.0), %
+
+        Returns:
+            質量含水率（0.0～1.0）, kg/kg 水分の重量÷材料の乾燥重量
+        """
+
+        r = rh * 0.01
+
+        return self.f_u(r)
+
+    def get_lambda_dsh_m(self, rh: float) -> float:
+        """湿気伝導率を求める。
+        
+        Args:
+            rh: 相対湿度(0.0～100.0), %
+        
+        Returns:
+            湿気伝導率, (kg/s)/(m Pa)
+        """
+
+        if self.name == '構造用合板1':
+            d = rh * 0.01
+            # *3.45   !  Moisture conductivity (kg/msPa)  ASHRAE
+            return 1.87E-11 * d**2.4019 * math.exp(-0.78864 * ( 1 - d**1.1471))
+        else:
+            return self.lambda_dsh_m
+
+    def get_lambda_dsh_mu_l(self, rh: float, t: float) -> float:
+        """水分化学ポテンシャル勾配に対する液相水分伝導率, (kg/s)/(m (J/kg)) を求める。
+        Args:
+            rh: 相対湿度(0.0～100.0), %
+            t: 絶対温度, K
+        Returns:
+            液相水分伝導率, (kg/s)/(m (J/kg))
+        """
+
+        if self.name == '構造用合板1':
+            if rh > 90.0:
+                return thermo_dynamics.DIFF(rh=rh, t=t, material=self)
+            else:
+                return 0.0
+        else:
+            return 0.0
+
+    def get_dpsi_dmu(self, mu: float, t: float):
+        """水分化学ポテンシャル変化に対する含水率変化 (DPDU) を計算する。
+            (m3/m3)/(J/kg)
+            分子：含水率, m3/m3
+            分母：水分化学ポテンシャル, J/kg
+        
+        Args:
+            mu: 水分化学ポテンシャル, J/kg
+            t: 絶対温度, K
+        Returns:
+            水分化学ポテンシャル変化に対する含水率変化, (m3/m3)/(J/kg)
+        """
+
+        return modules.thermo_dynamics.get_dpsi_dmu(mu=mu, t=t, gma=self.rho, get_u=self.get_u)
+
+    @property
+    def c_rho(self):
+        """容積比熱, J/(m3 K)"""
+        return self.c * self.rho
 
 
 class Materials:

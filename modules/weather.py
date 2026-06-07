@@ -26,7 +26,7 @@ class OutdoorCondition:
     cos_a: float
     
     # 温度, deg.C
-    t: float
+    theta: float
 
     # 水蒸気圧, Pa
     xod: float
@@ -52,7 +52,7 @@ class OutdoorCondition:
     @property
     def t_k(self):
         """絶対温度, K"""
-        return self.t + ATP
+        return self.theta + ATP
     
     @property
     def wp(self):
@@ -182,7 +182,7 @@ class Weather:
             cos_h=cos_h_d_t,
             sin_a=sin_a_d_t,
             cos_a=cos_a_d_t,
-            t=t,
+            theta=t,
             xod=xod,
             i_dn=i_dn,
             i_sky=i_sky,

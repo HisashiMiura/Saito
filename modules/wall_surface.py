@@ -2,11 +2,11 @@ from dataclasses import dataclass
 import numpy as np
 
 
-from .input_data import InputWall
-from .direction import Direction
-from .weather import OutdoorCondition
-from .config import HOI
-from .surface_solar import get_surface_solar_d_t
+from modules.input_wall import InputWall
+from modules.direction import Direction
+from modules.weather import OutdoorCondition
+from modules.config import HOI
+from modules.surface_solar import get_surface_solar_d_t
 
 
 @dataclass
@@ -21,6 +21,9 @@ class WallSurface:
     # アルベド
     albedo: float
 
+    # 評価高さ, m
+    eva_heigt: float
+
     @classmethod
     def read(cls, iw: InputWall):
 
@@ -33,10 +36,14 @@ class WallSurface:
         # アルベド
         albedo = iw.albedo
 
+        # 評価高さ, m
+        eva_height = iw.eva_height
+
         return WallSurface(
             direction=direction,
             angle=angle,
-            albedo=albedo
+            albedo=albedo,
+            eva_heigt=eva_height
         )
 
     def get_q_sol_d_t_k(self, oc: OutdoorCondition) -> float:
@@ -86,4 +93,32 @@ class WallSurface:
 
             return q_sol_d_t_k
 
-    def get_confrains
+    def get_v_wind_eva_k(self, v_wind: float) -> float:
+        """評価高さにおける風速を求める。
+
+        Args:
+            v_wind: 風速, m/s
+
+        Returns:
+            評価高さにおける風速, m/s
+        """
+
+        # 基準風速は6.5m高さ
+        return v_wind * (self.eva_height / 6.5)**0.25
+    
+    def get_wind_angle(self, wind_direction: float) -> float:
+        """風向と壁の法線のなす角度を求める。
+
+        Args:
+            wind_direction: 風向き, 度
+
+        Returns:
+            風向と壁の法線のなす角度, 度
+            
+        Notes:
+            TODO: 壁が傾斜している場合も考慮するべきではないか。現行の方法だと垂直壁しか考えていないように思われる。
+        """
+
+        return wind_direction - (180.0 + self.direction.alpha)
+
+
