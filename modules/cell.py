@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 
 from modules.materials import Material
-from modules.thermo_dynamics import ROW_CP, ROW, COND_H_I, COND_H_O, COND_H_AIR, COND_M_I, COND_M_O, COND_M_AIR
+from modules.thermo_dynamics import ROW_CP, ROW, COND_H_I, COND_H_O, COND_H_AIR, COND_M_I, COND_M_O, COND_M_AIR, get_rho
 from modules.state import State
 
 
@@ -58,9 +58,25 @@ class Cell(ABC):
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         pass
 
+    @abstractmethod
+    def v_air(self, t: float, rho_o: float) -> float:
+        """通気層内の風量を求める。
+        Args:
+            t: 絶対温度, K
+            rho_o: 外気の密度, kg/m3
+        Returns:
+            通気層内の風量, m3/s
+        """
+        pass
 
 @dataclass
 class CellAirLayer(Cell):
+
+    # 相当開口面積（αA）, m2
+    alpha_a: float
+
+    # 高さ, m
+    height: float
 
     @property
     def cap(self) -> float:
@@ -98,6 +114,20 @@ class CellAirLayer(Cell):
     def r_liq_wp_pls(self, state: State) -> float:
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         return float('inf')
+    
+    def v_air(self, t: float, rho_o: float) -> float:
+        """通気層内の風量を求める。
+        Args:
+            t: 絶対温度, K
+            rho_o: 外気の密度, kg/m3
+        Returns:
+            通気層内の風量, m3/s
+        """
+
+        # 通気層内の空気の密度, kg/m3
+        rho_i = get_rho(t=t)
+
+        return self.alpha_a * (2 / rho_o * abs(rho_o - rho_i) * 9.8 * self.height) ** 0.5
 
 
 @dataclass
@@ -151,6 +181,17 @@ class CellMaterial(Cell):
     def r_liq_wp_pls(self, state: State) -> float:
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         pass
+
+    def v_air(self, t: float, rho_o: float) -> float:
+        """通気層内の風量を求める。
+        Args:
+            t: 絶対温度, K
+            rho_o: 外気の密度, kg/m3
+        Returns:
+            通気層内の風量, m3/s
+        """
+
+        return 0.0
 
 
 @dataclass

@@ -5,7 +5,7 @@ from numpy.typing import NDArray
 from .weather import OutdoorCondition
 from config import HOI
 from nrain import NRAIN, get_nrains_of_walls
-from .thermo_dynamics import ATP, DIFF, get_dpv_dt, get_dpv_dmu, RW, ROW, CPL, GOFF, get_rh, get_rho
+from .thermo_dynamics import ATP, DIFF, get_dpv_dt, get_dpv_dmu, RW, ROW, CPL, GOFF, get_rh, get_rho, ROW_CP
 from .direction import Direction
 from .materials import Materials, Material
 from .input_wall import InputWall
@@ -133,9 +133,6 @@ class Wall:
     # 壁表面
     wsurf: WallSurface
 
-    # 相当開口面積（αA）, m2
-    alpha_a_ls: list[float]
-
     # 高さ, m
     height: float
 
@@ -231,7 +228,7 @@ class Wall:
     def get_t_next_is(
             self,
             t_is: np.ndarray,
-            dt: float, oc_n_pls: OutdoorCondition, t_r_n_pls: float, wp_r_n_pls: float, v_air_n: float, t_upstream_n_pls: float):
+            dt: float, oc_n_pls: OutdoorCondition, t_r_n_pls: float, wp_r_n_pls: float, t_upstream_n_pls: float):
         """反復法における次の計算の温度を求める。
 
         Args:
@@ -240,7 +237,6 @@ class Wall:
             oc_n_pls: ステップn+1における外気条件
             t_r_n_pls: ステップn+1における室温, K
             wp_r_n_pls: ステップn+1における室内の水分化学ポテンシャル, J/kg
-            v_air_n: ステップnからステップn+1における通気層内の空気の平均流速, m/s
             t_upstream_n_pls: ステップn+1における通気層内に流入する空気の温度, K
 
         Returns:
@@ -296,6 +292,9 @@ class Wall:
             # 熱容量を時間刻みで除した値, W/(m2 K)
             cap = self.cells_is[i].cap / dt
 
+            # 通気層内の風量, m3/s
+            v_air = self.cells_is[i].v_air(t=state_i.t, rho_o=oc_n_pls.rho)
+
             # W/m2
             UHEN = (
                 cap * self.t_n_is[i]
@@ -306,6 +305,7 @@ class Wall:
                 + c_wp_i_pls * (wp_i_pls - wp_i)
                 + CPL * j_liq_i_mns * t_i_mns
                 + CPL * j_liq_i_pls * t_i_pls
+                + ROW_CP * v_air * t_upstream_n_pls / self.area
             )
 
             # W/(m2 K)
@@ -315,14 +315,9 @@ class Wall:
                 + c_h_t_i_pls
                 + CPL * j_liq_i_mns
                 + CPL * j_liq_i_pls
+                + ROW_CP * v_air / self.area
             )
 
-            if self.is_air_layer_is:
-                # 空気層の場合に移流分を考慮する。
-                # 空気の容積比熱, J/(m3 K)                             
-                UHEN =+ 1300.0 * v_air_n[i] * t_upstream_n_pls / self.area
-                SAHEN =+ 1300.0 * v_air_n[i] / self.area
-            
             t_next_is[i] = UHEN / SAHEN
 
         return t_next_is
@@ -565,20 +560,15 @@ class Wall:
         
         return rn, wjrain
 
-    def get_v_air(self, oc: OutdoorCondition):
+    def get_v_air_is(self, oc: OutdoorCondition, t_is: np.ndarray):
         """通気層の換気量を求める。
         """
 
-        v_air = np.zeros(self.n_mesh_total, dtype=float)
-
-        for i in range(self.n_mesh_total):
-
-            if self.is_air_layer_is[i]:
-
-                rho_i = get_rho(t=self.t_n_is)
-                v_air[i] = self.alpha_a_ls * (2 / oc.rho * abs(oc.rho - rho_i) * 9.8 * self.height) ** 0.5
-        
-        return v_air
+        return np.array([
+            self.cells_is[i].v_air(t=t_i, rho_o=oc.rho)
+            for i, t_i in enumerate(t_is)
+        ])
+    
 
     def update_t_wd_gen(self):
 
@@ -618,9 +608,6 @@ class Wall:
         # Layerそれぞれにおける室外側と室内側のメッシュ番号, [L], [L]
         outside_end_point_mesh_index_ls, inside_end_point_mesh_index_ls = _get_outside_and_inside_end_point_mesh_index_ls(n_div_ls=n_div_ls)
 
-        # 相当開口面積（αA）, m2
-        alpha_a_ls = [layer.alpha * layer.thick * ipt_wall.len_horizontal for layer in layers]
-
         # ある質点がどのレイヤーに対応するかを保持するリスト, [I]
         lookup_table = create_lookup_table(layers)
 
@@ -648,6 +635,10 @@ class Wall:
         # 通気層かどうか, [I]
         is_air_layer_is = np.array([layers[layer_index].name == '通気層' for layer_index in lookup_table])
 
+        # 相当開口面積（αA）, m2, [I]
+        alpha_a_is = np.array([
+            layers[idx].alpha * layers[idx].thick * ipt_wall.len_horizontal for idx in lookup_table
+        ])
 
         # 質点iの質点間距離, m, [I]
         # レイヤー表面の質点において、SideA側の質点の場合はSideB側のみが、SideB側の質点の場合はSideA側のみが定義される。
@@ -660,10 +651,6 @@ class Wall:
         # 質点iの密度, kg/m3, [I]
         gma_is = np.array([material_i.rho for material_i in material_is])
 
-        # 質点iの体積, m3, [I]
-        # 端点の場合は体積が端点以外の部分の半分になる。（空気層は除く。）
-        v_is = np.where(is_outside_end_point_is | is_inside_end_point_is, 0.5, 1.0) * dx_is * area
-        
         cells_is = []
 
         for (i, layer_index) in enumerate(lookup_table):
@@ -684,7 +671,11 @@ class Wall:
 
             # 質点が空気層の場合
             elif is_air_layer_is[i]:
-                cell = CellAirLayer(x=dx_is[i])
+                cell = CellAirLayer(
+                    x=dx_is[i],
+                    alpha_a=alpha_a_is[i],
+                    height=height
+                )
 
             # 質点が室外側の端点の場合
             elif is_outside_end_point_is[i]:
@@ -737,26 +728,8 @@ class Wall:
 
         wsurf = WallSurface.read(iw=ipt_wall)
 
-        # 方位
-        direction = ipt_wall.direction
-
         # 壁の下端と上端の高さの差（換気計算に用いられる）, m
         height = ipt_wall.height
-
-        # 評価高さ, m
-        eva_height = ipt_wall.eva_height
-
-        # NRAIN Class
-        # 厚壁No. 
-        # wall_no: int
-        # 座標
-        # pos: int
-        # 層No
-        # layer_no: int
-        # 浸水率
-        # ratio: float
-        # 閾値風速, m/s
-        # v: float
 
         nrains_list: list[NRAIN] = get_nrains_of_walls(wall_index=i)
 
@@ -792,8 +765,6 @@ class Wall:
             for (is_rainpoint, wall_fall_ratio, wall_fall_wind_threshold) in zip(is_rainpoint_is, wall_fall_ratio_is, wall_fall_wind_threshold_is)]
 
         return Wall(
-            alpha_a_ls=alpha_a_ls,
-            height=height,
             area=area,
             n_mesh_total=n_mesh_total,
             dx_is=dx_is,

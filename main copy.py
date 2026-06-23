@@ -94,22 +94,12 @@ for NYEAR in range(1, period.LYEAR + 1):
                         wall.rn = rn_ws_is[w]
 
                     n = get_step_n(month=month, day=day, hour=hour, n_hour=n, n_div=NDVD)
-
-                    # *************換気量の算出(Q=m3/s)****************
-                    rho_o = oc.rho
-
-                    v_air_ws_is = []
                     
                     # 温度に関する収束計算が終了した時点での温度, [W, I] (ジャグ配列)
                     t_ws_is = []
 
                     for w, wall in enumerate(walls):
                         
-                        # 通気層の換気量, m3/s, [I]
-                        v_air_n = wall.get_v_air(oc=oc)
-
-                        v_air_ws_is.append(v_air_n)
-
                         # 反復法における壁体内の温度の初期値をステップnの値とする。
                         t_is = wall.t_n_is
 
@@ -122,7 +112,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                             # 通気層内に流入する空気の温度は外気温度とする。
                             t_upstream_n_pls = oc.t_k
 
-                            t_is_next = wall.get_t_next_is(t_is=t_is, dt=dt, oc_n_pls=oc, t_r_n_pls=room.t_n(n=n+1), wp_r_n_pls=room.wp_n(n=n+1), v_air_n=v_air_n, t_upstream_n_pls=t_upstream_n_pls)
+                            t_is_next = wall.get_t_next_is(t_is=t_is, dt=dt, oc_n_pls=oc, t_r_n_pls=room.t_n(n=n+1), wp_r_n_pls=room.wp_n(n=n+1), t_upstream_n_pls=t_upstream_n_pls)
 
                             delta_t_is = t_is_next - t_is
 
@@ -162,7 +152,8 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     for w, wall in enumerate(walls):
 
-                        v_air_is = v_air_ws_is[w]
+                        v_air_is = wall.get_v_air_is(oc=oc, t_is=t_is)
+
                         wjrain_is = wjrain_ws_is[w]
 
                         wp_is = wp_ws_is[w]
