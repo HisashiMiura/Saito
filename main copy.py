@@ -169,7 +169,7 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                         for i in range(500):
                         
-                            wp_is_next = wall.get_wp_n_pls(wp_is=wp_is, dt=dt, oc=oc, theta_r_n=theta_r_n, wp_r_n=wp_r_n, v_air_is=v_air_is, RN=rn_ws_is[w], WJRAIN=wjrain_is)
+                            wp_is_next = wall.get_wp_n_pls(wp_is=wp_is, dt=dt, oc_n_pls=oc, t_r_n_pls=room.t_n(n=n+1), wp_r_n_pls=room.wp_n(n=n+1), v_air_is=v_air_is, RN=rn_ws_is[w], WJRAIN=wjrain_is)
 
                             delta_t_is = wp_is_next - wp_is
 

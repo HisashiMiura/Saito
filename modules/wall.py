@@ -184,13 +184,13 @@ class Wall:
 
     cells_is: list[Cell]
 
-    def dpv_dmu(self, i: int) -> float:
+    def dpv_dmu(self, state: State) -> float:
         """水蒸気圧を水分化学ポテンシャルで偏微分（絶対温度一定）した値, Pa / (J / kg)"""
-        return get_dpv_dmu(rh=self.state_n_is[i].rh, t=self.state_n_is[i].t)
+        return get_dpv_dmu(rh=state.rh, t=state.t)
 
-    def dpv_dt(self, i: int) -> float:
+    def dpv_dt(self, state: State) -> float:
         """水蒸気圧を絶対温度で偏微分（水分化学ポテンシャル一定）した値, Pa / K"""
-        return get_dpv_dt(rh=self.state_n_is[i].rh, t=self.state_n_is[i].t)
+        return get_dpv_dt(rh=state.rh, t=state.t)
     
     def _c_h_t_i_mns(self, i: int) -> float:
         """温度差を駆動力とする熱移動に関する係数（室外側）, W/(K m2)"""
@@ -200,35 +200,38 @@ class Wall:
         """温度差を駆動力とする熱移動に関する係数（室内側）, W/(K m2)"""
         return 1 / (self.cells_is[i+1].r_h_mns + self.cells_is[i].r_h_pls)
 
-    def _c_vap_t_i_mns(self, i: int) -> float:
+    def _c_vap_t_i_mns(self, i: int, state: State, state_mns: State) -> float:
         """温度差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/K"""
         # dpv_dt：水蒸気圧の温度勾配, Pa/K
         # r_m：透湿抵抗, (m2 s Pa)/kg
-        return 1 / (self.cells_is[i-1].r_m_pls / self.dpv_dt(i-1) + self.cells_is[i].r_m_mns / self.dpv_dt(i))
+        return 1 / (self.cells_is[i-1].r_m_pls / self.dpv_dt(state=state_mns) + self.cells_is[i].r_m_mns / self.dpv_dt(state=state))
 
-    def _c_vap_t_i_pls(self, i: int) -> float:
+    def _c_vap_t_i_pls(self, i: int, state: State, state_pls: State) -> float:
         """温度差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/K"""
-        return 1 / (self.cells_is[i+1].r_m_mns / self.dpv_dt(i+1) + self.cells_is[i].r_m_pls / self.dpv_dt(i))
+        return 1 / (self.cells_is[i+1].r_m_mns / self.dpv_dt(state=state_pls) + self.cells_is[i].r_m_pls / self.dpv_dt(state=state))
 
-    def _c_vap_wp_i_mns(self, i: int) -> float:
+    def _c_vap_wp_i_mns(self, i: int, state: State, state_mns: State) -> float:
         """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
         # RMDG: 湿気伝導率, kg/(m s Pa)
         # dgdu: 水分化学ポテンシャルに対する水蒸気圧の微分, Pa / (J/kg)
-        return 1 / (self.cells_is[i-1].r_h_pls / self.dpv_dmu(i-1) + self.cells_is[i].r_h_mns / self.dpv_dmu(i))
+        return 1 / (self.cells_is[i-1].r_h_pls / self.dpv_dmu(state=state_mns) + self.cells_is[i].r_h_mns / self.dpv_dmu(state=state))
     
-    def _c_vap_wp_i_pls(self, i: int) -> float:
+    def _c_vap_wp_i_pls(self, i: int, state: State, state_pls: State) -> float:
         """水分化学ポテンシャル差を駆動力とする水蒸気移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
-        return 1 / (self.cells_is[i+1].r_h_mns / self.dpv_dmu[i+1] + self.cells_is[i].r_h_pls / self.dpv_dmu[i])
+        return 1 / (self.cells_is[i+1].r_h_mns / self.dpv_dmu(state=state_pls) + self.cells_is[i].r_h_pls / self.dpv_dmu(state=state))
     
-    def _c_liq_wp_i_mns(self, i: int) -> float:
+    def _c_liq_wp_i_mns(self, i: int, state: State, state_mns: State) -> float:
         """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室外側）, (kg/(s m2))/(J/kg)"""
-        return 1 / (self.cells_is[i-1].r_liq_wp_pls + self.cells_is[i].r_liq_wp_mns)
+        return 1 / (self.cells_is[i-1].r_liq_wp_pls(state=state_mns) + self.cells_is[i].r_liq_wp_mns(state=state))
 
-    def _c_liq_wp_i_pls(self, i: int) -> float:
+    def _c_liq_wp_i_pls(self, i: int, state: State, state_pls: State) -> float:
         """水分化学ポテンシャル差を駆動力とする液水移動に関する係数（室内側）, (kg/(s m2))/(J/kg)"""
-        return 1 / (self.cells_is[i+1].r_liq_wp_mns + self.cells_is[i].r_liq_wp_pls)
+        return 1 / (self.cells_is[i+1].r_liq_wp_mns(state=state_pls) + self.cells_is[i].r_liq_wp_pls(state=state))
 
-    def get_t_next_is(self, t_is: np.ndarray, dt: float, oc_n_pls: OutdoorCondition, t_r_n_pls: float, wp_r_n_pls: float, v_air_n: float, t_upstream_n_pls: float):
+    def get_t_next_is(
+            self,
+            t_is: np.ndarray,
+            dt: float, oc_n_pls: OutdoorCondition, t_r_n_pls: float, wp_r_n_pls: float, v_air_n: float, t_upstream_n_pls: float):
         """反復法における次の計算の温度を求める。
 
         Args:
@@ -269,27 +272,31 @@ class Wall:
             # 質点iが室内側の端点の場合は室内の水分化学ポテンシャルを用いる。
             wp_i_pls = wp_r_n_pls if isinstance(self.cells_is[i], CellInsideSurface) else self.wp_n_is[i + 1]
 
-            # 日射による吸収熱量, W
+            state_i_mns = State(t=t_i_mns, mu=wp_i_mns)
+            state_i = State(t=t_i, mu=wp_i)
+            state_i_pls = State(t=t_i_pls, mu=wp_i_pls)
+
+            # 日射による吸収熱量, W/m2
             # 質点iが室外側の端点の場合は日射による吸収熱量を考慮する。
             q_sol_d_t_k = self.wsurf.get_q_sol_d_t_k(oc=oc_n_pls) if isinstance(self.cells_is[i], CellOutsideSurface) else 0.0
 
-            # 温度差を駆動力とする熱移動に関する係数, W/K
-            c_h_t_i_mns = (self._c_h_t_i_mns(i) + RW * self._c_vap_t_i_mns(i)) * self.area
-            c_h_t_i_pls = (self._c_h_t_i_pls(i) + RW * self._c_vap_t_i_pls(i)) * self.area
+            # 温度差を駆動力とする熱移動に関する係数, W/(m2 K)
+            c_h_t_i_mns = (self._c_h_t_i_mns(i) + RW * self._c_vap_t_i_mns(i=i, state=state_i, state_mns=state_i_mns))
+            c_h_t_i_pls = (self._c_h_t_i_pls(i) + RW * self._c_vap_t_i_pls(i=i, state=state_i, state_pls=state_i_pls))
 
-            # 水分化学ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数, W/(J/kg)
-            c_wp_i_mns = RW * self._c_vap_wp_i_mns(i) * self.area
-            c_wp_i_pls = RW * self._c_vap_wp_i_pls(i) * self.area
+            # 水分化学ポテンシャル差を駆動力とする水蒸気移動に伴う熱移動に関する係数, W/(J/kg m2)
+            c_wp_i_mns = RW * self._c_vap_wp_i_mns(i=i, state=state_i, state_mns=state_i_mns)
+            c_wp_i_pls = RW * self._c_vap_wp_i_pls(i=i, state=state_i, state_pls=state_i_pls)
 
-            # 液水移動量, kg/s
+            # 液水移動量, kg/(s m2)
             # 温度差駆動の液水移動量は十分小さいため無視する。
-            j_liq_i_mns = self._c_liq_wp_i_mns(i) * (wp_i_mns - wp_i) * self.area
-            j_liq_i_pls = self._c_liq_wp_i_pls(i) * (wp_i_pls - wp_i) * self.area
+            j_liq_i_mns = self._c_liq_wp_i_mns(i=i, state=state_i, state_mns=state_i_mns) * (wp_i_mns - wp_i)
+            j_liq_i_pls = self._c_liq_wp_i_pls(i=i, state=state_i, state_pls=state_i_pls) * (wp_i_pls - wp_i)
 
-            # 熱容量を時間刻みで除した値, W/K
-            cap = self.cells_is[i].cap * self.area / dt
+            # 熱容量を時間刻みで除した値, W/(m2 K)
+            cap = self.cells_is[i].cap / dt
 
-            # W
+            # W/m2
             UHEN = (
                 cap * self.t_n_is[i]
                 + q_sol_d_t_k
@@ -301,7 +308,7 @@ class Wall:
                 + CPL * j_liq_i_pls * t_i_pls
             )
 
-            # W/K
+            # W/(m2 K)
             SAHEN = (
                 cap
                 + c_h_t_i_mns
@@ -313,22 +320,27 @@ class Wall:
             if self.is_air_layer_is:
                 # 空気層の場合に移流分を考慮する。
                 # 空気の容積比熱, J/(m3 K)                             
-                UHEN =+ 1300.0 * v_air_n[i] * t_upstream_n_pls
-                SAHEN =+ 1300.0 * v_air_n[i]
+                UHEN =+ 1300.0 * v_air_n[i] * t_upstream_n_pls / self.area
+                SAHEN =+ 1300.0 * v_air_n[i] / self.area
             
             t_next_is[i] = UHEN / SAHEN
 
         return t_next_is
 
     def get_wp_n_pls(
-            self, wp_is: np.ndarray, dt: float, oc: OutdoorCondition, theta_r_n: float, wp_r_n: float,
+            self,
+            wp_is: np.ndarray,
+            dt: float,
+            oc_n_pls: OutdoorCondition,
+            t_r_n_pls: float,
+            wp_r_n_pls: float,
             v_air_is: np.ndarray, RN: np.ndarray, WJRAIN: np.ndarray):
         """ステップn+1における水分化学ポテンシャルを求める。
 
         Args:
             dt (float): _description_
             oc (OutdoorCondition): _description_
-            theta_r_n (float): _description_
+            t_r_n_pls: _description_
             wp_r_n (float): _description_
             wp_is (np.ndarray): _description_
             QQ: 換気量, m3/s
@@ -339,38 +351,48 @@ class Wall:
             _type_: _description_
         """
 
-        wp_n_pls = np.zeros_like(self.wp_n_is, dtype=float)
+        # 反復法における次の計算の水分化学ポテンシャル（の入れ物）, J/kg, [I]
+        wp_n_pls = np.zeros_like(wp_is, dtype=float)
 
         for i in range(self.n_mesh_total):
             
-            # 質点の温度
-            # 室外側
-            t_i_mns = oc.t_k if isinstance(self.cells_is[i], CellOutsideSurface) else self.t_n_is[i - 1]
+            ### 質点の温度, K
+            # マイナス側の温度
+            # 質点iが室外側の端点の場合は外気温を用いる。
+            t_i_mns = oc_n_pls.t_k if isinstance(self.cells_is[i], CellOutsideSurface) else self.t_n_is[i - 1]
             # 中央（後退差分計算において温度については前のステップの値を用いる。）
             t_i = self.t_n_is[i]
-            # 室内側
-            t_i_pls = theta_r_n + ATP if isinstance(self.cells_is[i], CellInsideSurface) else self.t_n_is[i + 1]
+            # プラス側の温度
+            # 質点iが室内側の端点の場合は室内温度を用いる。
+            t_i_pls = t_r_n_pls if isinstance(self.cells_is[i], CellInsideSurface) else self.t_n_is[i + 1]
 
-            # 質点の水分化学ポテンシャル
+            ### 質点の水分化学ポテンシャル, J/kg, [I]
             # 室外側
-            wp_i_mns = oc.wp if isinstance(self.cells_is[i], CellOutsideSurface) else wp_is[i - 1]
-            # 中央
+            # 質点iが室外側の端点の場合は外気の水分化学ポテンシャルを用いる。
+            wp_i_mns = oc_n_pls.wp if isinstance(self.cells_is[i], CellOutsideSurface) else wp_is[i - 1]
+            # 中央（後退差分計算において水分化学ポテンシャルについては繰り返し計算に用いる温度を採用する。）
             wp_i = wp_is[i]
             # 室内側
-            wp_i_pls = wp_r_n if isinstance(self.cells_is[i], CellInsideSurface) else wp_is[i + 1]
+            # 質点iが室内側の端点の場合は室内の水分化学ポテンシャルを用いる。
+            wp_i_pls = wp_r_n_pls if isinstance(self.cells_is[i], CellInsideSurface) else wp_is[i + 1]
 
-            # 水分化学ポテンシャル差を駆動力とする水分（水蒸気＋液水）移動に関する係数, (kg/s) / (J/kg)
-            c_vap_liq_wp_i_mns = (self._c_vap_wp_i_mns(i=i) + self._c_liq_wp_i_mns(i=i)) * self.area
-            c_vap_liq_wp_i_pls = (self._c_vap_wp_i_pls(i=i) + self._c_liq_wp_i_pls(i=i)) * self.area
+            state_i_mns = State(t=t_i_mns, mu=wp_i_mns)
+            state_i = State(t=t_i, mu=wp_i)
+            state_i_pls = State(t=t_i_pls, mu=wp_i_pls)
 
-            # 温度差を駆動力とする水蒸気移動量, kg/s
+            # 水分化学ポテンシャル差を駆動力とする水分（水蒸気＋液水）移動に関する係数, (kg/s) / (J/kg m2)
+            c_vap_liq_wp_i_mns = (self._c_vap_wp_i_mns(i=i, state=state_i, state_mns=state_i_mns) + self._c_liq_wp_i_mns(i=i, state=state_i, state_mns=state_i_mns))
+            c_vap_liq_wp_i_pls = (self._c_vap_wp_i_pls(i=i, state=state_i, state_pls=state_i_pls) + self._c_liq_wp_i_pls(i=i, state=state_i, state_pls=state_i_pls))
+
+            # 温度差を駆動力とする水蒸気移動量, kg/(m2 s)
             # 温度差を駆動力とする液水移動量は非常に小さいため無視する。
-            j_vap_i_mns = self._c_vap_t_i_mns(i=i) * self.area * (t_i_mns - t_i)
-            j_vap_i_pls = self._c_vap_t_i_pls(i=i) * self.area * (t_i_pls - t_i)
+            j_vap_i_mns = self._c_vap_t_i_mns(i=i, state=state_i, state_mns=state_i_mns) * (t_i_mns - t_i)
+            j_vap_i_pls = self._c_vap_t_i_pls(i=i, state=state_i, state_pls=state_i_pls) * (t_i_pls - t_i)
 
+            # 水分移動に伴う容積項, (kg/m2)/(J/kg)
             cap_m = self.cells_is[i].cap_m(state=self.state_n_is)
 
-            # (kg/s)/(J/kg)
+            # (kg/s)/(J/kg m2)
             # m_cap: kg/(J/kg)
             SAHEN = (
                 cap_m / dt
@@ -378,7 +400,7 @@ class Wall:
                 + c_vap_liq_wp_i_pls
             )
 
-            # kg/s
+            # kg/(s m2)
             UHEN = (
                 cap_m / dt * self.wp_n_is[i]
                 + c_vap_liq_wp_i_mns * wp_i_mns
@@ -403,9 +425,9 @@ class Wall:
 
                 # (kg/s)/(J/kg) = ??? * Pa/(J/kg) * ((kg/m3)/Pa) * m3/s
                 # もとのプログラムから1.2を消した
-                j_wtr_vent_wp = self.dpv_dmu(i) * PXCOF * v_air_is[i]
+                j_wtr_vent_wp = self.dpv_dmu(state=State(t=t_i, mu=wp_i)) * PXCOF * v_air_is[i]
                 # (kg/s)/K = kg/m3 * Pa/K * (1/Pa) * m3/s
-                j_wtr_vent_k = self.dpv_dt(i) * PXCOF * v_air_is[i]
+                j_wtr_vent_k = self.dpv_dt(state=State(t=t_i, mu=wp_i)) * PXCOF * v_air_is[i]
 
                 # RN: 水膜の保持水分量, kg/m2
 
@@ -417,8 +439,8 @@ class Wall:
 
                 # 風上側は外気にした。（もともとは上流側の通気層の状態量が入ることになっていた。）
                 UHEN += (
-                    j_wtr_vent_wp * oc.wp
-                    + j_wtr_vent_k * (oc.t_k - t_i)
+                    j_wtr_vent_wp * oc_n_pls.wp
+                    + j_wtr_vent_k * (oc_n_pls.t_k - t_i)
                     + j_dsh_vap_i_pls
                     + j_dsh_vap_i_mns
                 )
@@ -500,7 +522,7 @@ class Wall:
                 # バックシーラー透水抵抗 2.4e+5 m2sPa/kg by 長村
                 r = 2.4e5
                 # コンダクタンス (kg/s) / m2 (J/kg)
-                c = 1 / (self.dx_is[i] / rmdl + r / self.dpv_dmu(i))
+                c = 1 / (self.dx_is[i] / rmdl + r / self.dpv_dmu(state=State(t=self.t_n_is[i], mu=wp_is[i])))
 
                     
                 # 当該質点が飽和している前提で計算する。
