@@ -1,48 +1,51 @@
 import math
-from modules.materials import Material
+from typing import Callable
 
 
-# 絶対温度, K
 ATP = 273.15
+"""絶対温度, K"""
 
-# 水蒸気の比気体定数, J / (kg K)
 RG = 461.5
+"""水蒸気の比気体定数, J / (kg K)"""
 
-# 乾き空気の平均分子量(約28.966)に対する水蒸気の分子量(約18.015)の比
 RMVA = 0.6217
+"""乾き空気の平均分子量(約28.966)に対する水蒸気の分子量(約18.015)の比"""
 
 ROW_CP = 1300.0
 """空気の容積比熱, J / (m3 K)"""
 
-# 水の蒸発潜熱, J / kg
 RW = 2.512 * 10**6
+"""水の蒸発潜熱, J / kg"""
 
 CPL = 4200.0
 """水の比熱, J / (kg K)"""
 
-# 水の密度, kg / m3
 ROW = 998.0
+"""水の密度, kg / m3"""
 
-# 標準大気圧, Pa
 P_ATM = 101325.0
+"""標準大気圧, Pa"""
 
-# 室外側表面熱伝達率, W/(m2 K)
 COND_H_O = 22.4
+"""室外側表面熱伝達率, W/(m2 K)"""
 
-# 室内側表面熱伝達率, W/(m2 K)
 COND_H_I = 9.2
+"""室内側表面熱伝達率, W/(m2 K)"""
 
-# 通気層表面熱伝達率, W/(m2 K)
 COND_H_AIR = 9.2
+"""通気層表面熱伝達率, W/(m2 K)"""
 
-# 室外側表面湿気伝達率, (kg/s)/(m2 Pa)
 COND_M_O = 2.0e-11
+"""室外側表面湿気伝達率, (kg/s)/(m2 Pa)"""
 
-# 室内側表面湿気伝達率, (kg/s)/(m2 Pa)
 COND_M_I = 3.43e-08
+"""室内側表面湿気伝達率, (kg/s)/(m2 Pa)"""
 
-# 通気層表面湿気伝達率, (kg/s)/(m2 Pa)
 COND_M_AIR = 3.43e-08
+"""通気層表面湿気伝達率, (kg/s)/(m2 Pa)"""
+
+R_M_BS = 2.4e5
+"""バックシーラー透水抵抗(=2.4e+5 m2sPa/kg by 長村)"""
 
 def get_x(p_v: float) -> float:
     """絶対湿度を求める。
@@ -221,7 +224,7 @@ def get_rh(mu: float, t: float) -> float:
     return min(rh, 100.0) 
 
 
-def DIFF(rh:float, t: float, material: Material):
+def DIFF(rh:float, t: float, f_u: Callable[[float], float]):
     """水分伝導率(RML)の計算
 
     Args:
@@ -232,7 +235,7 @@ def DIFF(rh:float, t: float, material: Material):
     """
 
     # 含水率, %
-    wd = material.get_u(rh=rh) * 100
+    wd = f_u(rh=rh) * 100
     
     if 45 < wd < 110:
         d1 = wd * 0.01
@@ -249,8 +252,8 @@ def DIFF(rh:float, t: float, material: Material):
         # 微分を差分で近似している計算
         wp1 = get_wp(rh1, t)
         wp2 = get_wp(rh2, t)
-        wd1 = material.get_u(rh=rh1) * 100
-        wd2 = material.get_u(rh=rh2) * 100
+        wd1 = f_u(rh=rh1) * 100
+        wd2 = f_u(rh=rh2) * 100
         
         # ゼロ除算のチェック
         if abs(wp1 - wp2) > 1e-12:

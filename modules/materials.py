@@ -131,7 +131,7 @@ class Material:
 
         if self.name == '構造用合板1':
             if rh > 90.0:
-                return thermo_dynamics.DIFF(rh=rh, t=t, material=self)
+                return thermo_dynamics.DIFF(rh=rh, t=t, f_u=self.f_u)
             else:
                 return 0.0
         else:
