@@ -217,4 +217,9 @@ class Materials:
         else:
 
             return ms[0]
+        
+    def get_material_name(self) -> list[str]:
+        """登録されている材料名称のリストを取得する。"""
+
+        return [m.name for m in self.ms]
     
