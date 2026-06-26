@@ -117,6 +117,7 @@ class WallSurface:
             
         Notes:
             TODO: 壁が傾斜している場合も考慮するべきではないか。現行の方法だと垂直壁しか考えていないように思われる。
+            TODO: 風向きの定義が、北側から時計回りで定義されているのでは？
         """
 
         return wind_direction - (180.0 + self.direction.alpha)

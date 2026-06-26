@@ -5,10 +5,12 @@ from abc import ABC, abstractmethod
 from modules.materials import Material
 from modules.thermo_dynamics import ROW_CP, ROW, COND_H_I, COND_H_O, COND_H_AIR, COND_M_I, COND_M_O, COND_M_AIR, get_rho
 from modules.state import State
+from modules.nrain import get_j_rain
 
 
 @dataclass
 class Cell(ABC):
+    """Cellの抽象クラス"""
 
     # 幅, m
     x: float
@@ -69,8 +71,10 @@ class Cell(ABC):
         """
         pass
 
+
 @dataclass
 class CellAirLayer(Cell):
+    """通気層Cell"""
 
     # 相当開口面積（αA）, m2
     alpha_a: float
@@ -132,6 +136,7 @@ class CellAirLayer(Cell):
 
 @dataclass
 class CellMaterial(Cell):
+    """通気層以外のCell"""
 
     material: Material
 
@@ -196,6 +201,7 @@ class CellMaterial(Cell):
 
 @dataclass
 class CellOutsideSurface(CellMaterial):
+    """室外側表面Cell"""
 
     @property
     def r_h_mns(self) -> float:
@@ -228,6 +234,7 @@ class CellOutsideSurface(CellMaterial):
 
 @dataclass
 class CellInsideSurface(CellMaterial):
+    """室内側表面Cell"""
 
     @property
     def r_h_mns(self) -> float:
@@ -261,6 +268,7 @@ class CellInsideSurface(CellMaterial):
 # 室外側端点（空気層に面しない・外気に面しない）
 @dataclass
 class CellOutsideEndPoint(CellMaterial):
+    """室外側材料表面Cell"""
 
     # 熱コンダクタンス（＋）, W/(m2 K)
     cond_h_o: float
@@ -300,6 +308,7 @@ class CellOutsideEndPoint(CellMaterial):
 # 室内側端点（空気層に面しない・室内に面しない）
 @dataclass
 class CellInsideEndPoint(CellMaterial):
+    """室内側材料表面Cell"""
 
     # 熱コンダクタンス（＋）, W/(m2 K)
     cond_h_i: float
@@ -338,6 +347,13 @@ class CellInsideEndPoint(CellMaterial):
 
 @dataclass
 class CellOutsideEndPointAirLayer(CellMaterial):
+    """通気層に面する室外側材料表面Cell"""
+
+    # 雨水浸入の割合, -
+    ratio: float
+
+    # 雨水浸入が生じる際の風速の閾値, m/s
+    v_threshold: float
 
     @property
     def r_h_mns(self) -> float:
@@ -366,10 +382,22 @@ class CellOutsideEndPointAirLayer(CellMaterial):
     def r_liq_wp_pls(self, state: State) -> float:
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         return self.x / self.material.get_lambda_dsh_mu_l(rh=state.rh, t=state.t)
+    
+    def get_x(self, v_mod: float, angle: float, rf: float):
+
+        swjrain = get_j_rain(v_mod=v_mod, wind_threshold=self.v_threshold, ratio=self.ratio, angle=angle, rf=rf)
+        return swjrain       
 
 
 @dataclass
 class CellInsideEndPointAirLayer(CellMaterial):
+    """通気層に面する室内側材料表面Cell"""
+
+    # 雨水浸入の割合, -
+    ratio: float
+
+    # 雨水浸入が生じる際の風速の閾値, m/s
+    v_threshold: float
 
     @property
     def r_h_mns(self) -> float:
@@ -398,10 +426,16 @@ class CellInsideEndPointAirLayer(CellMaterial):
     def r_liq_wp_pls(self, state: State) -> float:
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         return float('inf')
+    
+    def get_x(self, v_mod: float, angle: float, rf: float):
+
+        swjrain = get_j_rain(v_mod=v_mod, wind_threshold=self.v_threshold, ratio=self.ratio, angle=angle, rf=rf)
+        return swjrain
 
 
 @dataclass
 class CellInterior(CellMaterial):
+    """材料内Cell"""
 
     @property
     def r_h_mns(self) -> float:
@@ -430,3 +464,4 @@ class CellInterior(CellMaterial):
     def r_liq_wp_pls(self, state: State) -> float:
         """水分伝導抵抗（＋）, (m2 (J/kg))/(kg/s)"""
         return self.x / self.material.get_lambda_dsh_mu_l(rh=state.rh, t=state.t)
+

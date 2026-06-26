@@ -167,15 +167,16 @@ class RainLeakage:
                 # TODO: Wind_direction の定義をきちんと確認しないといけない。この式のままだと、北側から時計回りか？
                 # 水平方向などにも対応させないといけないのではないか？
                 # この式は垂直壁にしか対応していないので、3次元的にcosを計算する必要あり。
+                # kg / (m2 mm)
                 d2 = np.maximum(
-                    self.ratio * x * np.cos(np.radians(angle)) * FE * FD * FL,
+                    self.ratio * 0.01 * x * np.cos(np.radians(angle)) * FE * FD * FL,
                     0.0
                 )
 
                 sigma =  v_mod / np.sqrt(np.pi / 2)
                 weight = rayleigh.pdf(x=x, scale=sigma)
 
-                return np.sum(weight * d2) / np.sum(weight) * 0.01
+                return np.sum(weight * d2) / np.sum(weight)
 
             else:
 
@@ -185,3 +186,45 @@ class RainLeakage:
 
             return 0.0
     
+
+def get_j_rain(v_mod: float, wind_threshold: float, ratio: float, angle: float, rf: float):
+    """雨水浸入量を計算する。
+
+    Args:
+        v_mod: 風速, m/s
+        wind_threshold: 風速の閾値, m/s
+        ratio: 雨水浸入率, -
+        angle: 風向と壁の法線のなす角度, deg.
+        rf: 降水量, mm/s
+
+    Returns:
+        雨水浸入量, kg/(s m2)
+    """
+
+    # 風速の分布, m/s, [N]
+    x = np.linspace(0.1 * v_mod, 3.0 * v_mod, 30)
+
+    if v_mod > wind_threshold and np.cos(np.radians(angle)) > 0.0:
+
+        # ASHRAE 160-2009
+        # 雨水暴露係数
+        FE = 1.5
+        # 雨水付着係数
+        FD = 1.0
+        # 経験的な定数, kg s / (m3 mm)
+        FL = 0.2
+
+        # TODO: Wind_direction の定義をきちんと確認しないといけない。この式のままだと、北側から時計回りか？
+        # 水平方向などにも対応させないといけないのではないか？
+        # この式は垂直壁にしか対応していないので、3次元的にcosを計算する必要あり。
+        # kg / (m2 mm)
+        d2 = ratio * 0.01 * x * np.cos(np.radians(angle)) * FE * FD * FL
+
+        sigma =  v_mod / np.sqrt(np.pi / 2)
+        weight = rayleigh.pdf(x=x, scale=sigma)
+
+        return np.sum(weight * d2) / np.sum(weight) * rf
+
+    else:
+
+        return 0.0

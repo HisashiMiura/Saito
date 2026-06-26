@@ -107,7 +107,7 @@ for NYEAR in range(1, period.LYEAR + 1):
                         # ある壁が他の壁に与える影響が無い（あるいは少ない）場合はこの方法の方が良いと思われる。
                         # 仮にある壁が他の壁に与える影響がある場合（例えば、ある壁の壁体内通気層温度が連通している他の壁の通気層の上流側温度になる場合など）であっても、
                         # その影響度合いが小さいのであれば、陽解法的にステップnの値を用いることによって簡易化する方が、計算速度の観点から良いと思われる。
-                        for i in range(500):
+                        for k in range(500):
 
                             # 通気層内に流入する空気の温度は外気温度とする。
                             t_upstream_n_pls = oc.t_k
@@ -132,9 +132,6 @@ for NYEAR in range(1, period.LYEAR + 1):
                     IT2=0
                     CWMAX=2.8E-2
 
-                    theta_r_n = room.theta_n(n=n)
-                    wp_r_n = room.wp_n(n=n)
-
                     rn_ws_is = []
                     wjrain_ws_is = []
 
@@ -143,15 +140,14 @@ for NYEAR in range(1, period.LYEAR + 1):
 
                     for w, wall in enumerate(walls):
 
-                        rn_is, wjrsin_is = wall.get_rn_n_pls(wp_is=wp_is, oc=oc, p_v_rm=room.p_v_n(n), dt=dt)
+                        rn_n_pls_is = wall.get_rn_n_pls_is(oc=oc, dt=dt)
 
-                        rn_ws_is.append(rn_is)
-                        wjrain_ws_is.append(wjrsin_is)
+                        rn_ws_is.append(rn_n_pls_is)
 
                     wp_ws_is = []
 
                     for w, wall in enumerate(walls):
-
+                        
                         v_air_is = wall.get_v_air_is(oc=oc, t_is=t_is)
 
                         wjrain_is = wjrain_ws_is[w]
