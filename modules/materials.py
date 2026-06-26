@@ -170,8 +170,9 @@ class Materials:
         #file_name = 'material_prop.csv'
         file_name = 'material_prop.xlsx'
 
-        # absolute file path
-        path_and_filename = str(os.path.dirname(__file__)) + '/' + file_name
+        # 絶対 path の取得
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        path_and_filename = os.path.join(current_dir, file_name)
 
         try:
 
